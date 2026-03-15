@@ -1,0 +1,21 @@
+{
+  "name": "polyvis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PolySignal on Somnia inside the main polyVis project",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:somnia": "hardhat run scripts/deploy.js --network somniaTestnet",
+    "fetch:polymarket": "node scripts/fetchPolymarketData.js",
+    "relay:trade": "node scripts/relayPolymarketTrade.js"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.22.19",
+    "viem": "^2.21.57"
+  }
+}
