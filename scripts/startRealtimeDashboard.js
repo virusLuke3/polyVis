@@ -1,4 +1,8 @@
 require("dotenv").config();
+const { applyClashProxyEnv, normalizePrivateKey } = require("./lib/proxy");
+const { computeAnomalyProfile, decodeAnomalyFlags } = require("./lib/anomaly");
+const { evaluateReactiveSignal } = require("./lib/reactiveSignal");
+applyClashProxyEnv();
 
 const fs = require("fs");
 const path = require("path");
@@ -8,8 +12,10 @@ const {
   createWalletClient,
   decodeEventLog,
   defineChain,
+  encodePacked,
   getAddress,
   http: httpTransport,
+  keccak256,
   parseAbi,
 } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
@@ -18,6 +24,12 @@ const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 const NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 const USDC_DECIMALS = 6;
+const LOG_BLOCK_BATCH = BigInt(process.env.POLYMARKET_LOG_BLOCK_BATCH || "1000");
+const SOMNIA_LOG_BLOCK_BATCH = BigInt(process.env.SOMNIA_LOG_BLOCK_BATCH || "900");
+const SOMNIA_USE_LEGACY_TX = (process.env.SOMNIA_USE_LEGACY_TX || "true") === "true";
+const SOMNIA_GAS_BUFFER_BPS = BigInt(process.env.SOMNIA_GAS_BUFFER_BPS || "13000");
+const PORT_AUTO_INCREMENT = (process.env.PORT_AUTO_INCREMENT || "true") === "true";
+const PORT_SEARCH_LIMIT = Number(process.env.PORT_SEARCH_LIMIT || "20");
 const RUNTIME_DIR = path.resolve(process.env.POLYSIGNAL_RUNTIME_DIR || "./data/runtime");
 const CURSOR_PATH = path.join(RUNTIME_DIR, "cursor.json");
 const SNAPSHOT_PATH = path.join(RUNTIME_DIR, "dashboard-state.json");
@@ -28,12 +40,29 @@ const polymarketOrderFilledAbi = parseAbi([
 ]);
 
 const tradeBridgeAbi = parseAbi([
-  "function logTrade((bytes32 sourceTradeId, bytes32 marketId, address trader, uint256 amount, uint8 direction, uint64 accountAgeDays, uint32 oddsBps, uint256 totalPositionUsd, string marketTitle) tradeInput) returns (uint64 sequence)",
+  "function logTrade((bytes32 sourceTradeId, bytes32 marketId, address trader, uint256 amount, uint8 direction, uint64 accountAgeDays, uint32 oddsBps, uint256 totalPositionUsd, uint16 anomalyFlags, uint16 riskScoreBps, uint16 recentTradeCount, uint16 sameSideStreak, uint16 counterpartyConcentrationBps, uint16 marketImpactBps, uint16 washClusterScoreBps, uint16 smartMoneyScoreBps, string marketTitle) tradeInput) returns (uint64 sequence)",
 ]);
 
-const reactiveAbi = parseAbi([
-  "function previewSignal(uint256 amount, uint64 accountAgeDays, uint32 oddsBps, uint256 totalPositionUsd, uint8 direction) view returns (bool shouldEmit, uint8 analysisCode, string thesis)",
-]);
+const alphaSignalEvent = {
+  type: "event",
+  name: "AlphaSignal",
+  inputs: [
+    { indexed: true, name: "marketId", type: "bytes32" },
+    { indexed: true, name: "trader", type: "address" },
+    { indexed: true, name: "sourceTradeId", type: "bytes32" },
+    { indexed: false, name: "amount", type: "uint256" },
+    { indexed: false, name: "direction", type: "uint8" },
+    { indexed: false, name: "analysisCode", type: "uint8" },
+    { indexed: false, name: "matchedFlags", type: "uint16" },
+    { indexed: false, name: "relayedFlags", type: "uint16" },
+    { indexed: false, name: "riskScoreBps", type: "uint16" },
+    { indexed: false, name: "oddsBps", type: "uint32" },
+    { indexed: false, name: "totalPositionUsd", type: "uint256" },
+    { indexed: false, name: "observedAt", type: "uint64" },
+    { indexed: false, name: "marketTitle", type: "string" },
+    { indexed: false, name: "thesis", type: "string" },
+  ],
+};
 
 const polygon = defineChain({
   id: 137,
@@ -67,7 +96,23 @@ const somniaPublicClient = createPublicClient({
   transport: httpTransport(),
 });
 
-const privateKey = process.env.PRIVATE_KEY;
+function getSomniaTxOverrides() {
+  const gasPrice = process.env.SOMNIA_GAS_PRICE_WEI
+    ? BigInt(process.env.SOMNIA_GAS_PRICE_WEI)
+    : undefined;
+
+  if (SOMNIA_USE_LEGACY_TX) {
+    return gasPrice ? { gasPrice } : {};
+  }
+
+  return {};
+}
+
+function withGasBuffer(gasEstimate) {
+  return (gasEstimate * SOMNIA_GAS_BUFFER_BPS) / 10000n;
+}
+
+const privateKey = normalizePrivateKey(process.env.PRIVATE_KEY);
 const account = privateKey ? privateKeyToAccount(privateKey) : null;
 const somniaWalletClient = account
   ? createWalletClient({
@@ -77,24 +122,50 @@ const somniaWalletClient = account
     })
   : null;
 
+function parseMarketSlugs() {
+  const configured = process.env.POLYMARKET_MARKET_SLUGS || process.env.POLYMARKET_MARKET_SLUG || "";
+
+  return [
+    ...new Set(
+      configured
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    ),
+  ];
+}
+
 const state = {
   startedAt: new Date().toISOString(),
   status: "booting",
   config: {
-    slug: process.env.POLYMARKET_MARKET_SLUG || "trump-presidential-election",
+    slugs: parseMarketSlugs(),
+    trackAllActiveMarkets: (process.env.POLYMARKET_TRACK_ALL_ACTIVE || "true") === "true",
+    activeMarketsLimit: Number(process.env.POLYMARKET_ACTIVE_MARKETS_LIMIT || "3000"),
+    activeMarketsPageSize: Number(process.env.POLYMARKET_ACTIVE_MARKETS_PAGE_SIZE || "500"),
+    marketRefreshMs: Number(process.env.POLYMARKET_MARKET_REFRESH_MS || "900000"),
     minWhaleUsd: Number(process.env.POLYSIGNAL_MIN_WHALE_USDC || "25000"),
     pollIntervalMs: Number(process.env.POLYSIGNAL_POLL_INTERVAL_MS || "12000"),
     dashboardPort: Number(process.env.PORT || "3000"),
+    somniaChainId: Number(process.env.SOMNIA_CHAIN_ID || "50312"),
+    somniaRpcUrl: process.env.SOMNIA_RPC_URL || "https://dream-rpc.somnia.network",
     bridgeAddress: process.env.POLYMARKET_TRADE_BRIDGE_ADDRESS || process.env.MOCK_POLYMARKET_ADDRESS || "",
     reactiveAddress: process.env.POLYSIGNAL_REACTIVE_ADDRESS || "",
+    accessPassAddress: process.env.POLYSIGNAL_ACCESS_PASS_ADDRESS || "",
+    premiumPriceWei: process.env.POLYSIGNAL_PREMIUM_PRICE_WEI || "0",
+    accessDurationDays: Number(process.env.POLYSIGNAL_ACCESS_DURATION_DAYS || "30"),
   },
+  activeMarketSlug: null,
   market: null,
+  markets: [],
+  lastMarketRefreshAt: null,
   latestBlock: null,
   lastProcessedBlock: null,
   counters: {
     tradesSeen: 0,
     tradesRelayed: 0,
     signalsProjected: 0,
+    signalsObserved: 0,
     relayFailures: 0,
   },
   analytics: {
@@ -109,14 +180,18 @@ const state = {
     convictionScore: 0,
   },
   trades: [],
+  alphaSignals: [],
   events: [],
   errors: [],
 };
 
 const sseClients = new Set();
 let pollTimer = null;
-let marketContext = null;
+let httpServer = null;
+const marketContexts = new Map();
+const tokenMarketIndex = new Map();
 let isPolling = false;
+const processedTrades = [];
 
 function ensureRuntimeDir() {
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
@@ -152,6 +227,26 @@ function readJsonIfExists(filePath) {
 function writeJson(filePath, value) {
   ensureRuntimeDir();
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+}
+
+function normalizeRelayError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const duplicate =
+    message.includes("DuplicateSourceTrade") ||
+    message.includes("0xb4bcdd0c") ||
+    message.toLowerCase().includes("duplicate source trade");
+
+  if (duplicate) {
+    return {
+      duplicate: true,
+      message: "Already relayed earlier on Somnia for this source trade.",
+    };
+  }
+
+  return {
+    duplicate: false,
+    message,
+  };
 }
 
 function pushEvent(type, payload) {
@@ -194,6 +289,92 @@ function shortAddress(address) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function extractEventSlug(market) {
+  const events = Array.isArray(market?.events) ? market.events : [];
+  const candidate = events.find((event) => event && typeof event.slug === "string" && event.slug.trim());
+  return candidate?.slug || "";
+}
+
+function toPolymarketUrl(market) {
+  const slug = extractEventSlug(market) || market?.slug || "";
+  return slug ? `https://polymarket.com/event/${slug}` : "";
+}
+
+function getMarketKey(market) {
+  return market?.slug || market?.conditionId || "";
+}
+
+function buildMarketSummary(context) {
+  return {
+    slug: getMarketKey(context.market),
+    question: context.market.question,
+    conditionId: context.market.conditionId,
+    volume: Number(context.market.volume || 0),
+    liquidity: Number(context.market.liquidity || 0),
+    outcomePrices: context.outcomePrices,
+    polymarketUrl: context.polymarketUrl,
+    trackedVolumeUsd: 0,
+    suspiciousTrades: 0,
+    relayedTrades: 0,
+    alphaSignals: 0,
+    lastTradeAt: null,
+    lastAlphaAt: null,
+    lastAnomalies: [],
+    latestThesis: "",
+  };
+}
+
+function sortMarketSummaries() {
+  state.markets.sort((a, b) => {
+    const alphaDelta = (b.alphaSignals || 0) - (a.alphaSignals || 0);
+    if (alphaDelta !== 0) return alphaDelta;
+
+    const suspiciousDelta = (b.suspiciousTrades || 0) - (a.suspiciousTrades || 0);
+    if (suspiciousDelta !== 0) return suspiciousDelta;
+
+    const relayedDelta = (b.relayedTrades || 0) - (a.relayedTrades || 0);
+    if (relayedDelta !== 0) return relayedDelta;
+
+    const trackedVolumeDelta = Number(b.trackedVolumeUsd || 0) - Number(a.trackedVolumeUsd || 0);
+    if (trackedVolumeDelta !== 0) return trackedVolumeDelta;
+
+    return Number(b.volume || 0) - Number(a.volume || 0);
+  });
+}
+
+function syncPrimaryMarket() {
+  sortMarketSummaries();
+
+  if (!state.activeMarketSlug && state.markets.length > 0) {
+    state.activeMarketSlug = state.markets[0].slug;
+  }
+
+  state.market =
+    state.markets.find((item) => item.slug === state.activeMarketSlug) || state.markets[0] || null;
+}
+
+function upsertMarketSummary(summary) {
+  const index = state.markets.findIndex((item) => item.slug === summary.slug);
+  if (index === -1) {
+    state.markets.push(summary);
+  } else {
+    state.markets[index] = { ...state.markets[index], ...summary };
+  }
+  syncPrimaryMarket();
+}
+
+function updateMarketSummary(slug, updater) {
+  const index = state.markets.findIndex((item) => item.slug === slug);
+  if (index === -1) {
+    return;
+  }
+
+  const current = state.markets[index];
+  const next = typeof updater === "function" ? updater(current) : { ...current, ...updater };
+  state.markets[index] = next;
+  syncPrimaryMarket();
+}
+
 async function fetchMarketBySlug(slug) {
   const response = await fetch(`${GAMMA_API_BASE}/markets?slug=${encodeURIComponent(slug)}`);
   if (!response.ok) {
@@ -206,6 +387,35 @@ async function fetchMarketBySlug(slug) {
     throw new Error(`No market found for slug "${slug}"`);
   }
   return market;
+}
+
+async function fetchActiveMarkets() {
+  const allMarkets = [];
+  const pageSize = Math.max(1, state.config.activeMarketsPageSize);
+  const maxMarkets = Math.max(pageSize, state.config.activeMarketsLimit);
+
+  for (let offset = 0; offset < maxMarkets; offset += pageSize) {
+    const response = await fetch(
+      `${GAMMA_API_BASE}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gamma active markets lookup failed with status ${response.status} at offset ${offset}`);
+    }
+
+    const data = await response.json();
+    const markets = Array.isArray(data) ? data : [];
+    if (markets.length === 0) {
+      break;
+    }
+
+    allMarkets.push(...markets);
+    if (markets.length < pageSize) {
+      break;
+    }
+  }
+
+  return allMarkets.slice(0, maxMarkets);
 }
 
 function extractTokenIds(market) {
@@ -266,17 +476,70 @@ function computeTraderPositionUsd(trade) {
 }
 
 function buildBridgePayload(trade) {
-  const oddsBps = trade.direction === 0 ? marketContext.outcomePrices.yesBps : marketContext.outcomePrices.noBps;
+  const context = marketContexts.get(trade.marketSlug);
+  if (!context) {
+    throw new Error(`Missing market context for slug "${trade.marketSlug}"`);
+  }
+
+  const oddsBps = trade.direction === 0 ? context.outcomePrices.yesBps : context.outcomePrices.noBps;
+  const marketScopedTrades = processedTrades.filter((item) => item.marketSlug === trade.marketSlug);
+  const traderHistory = processedTrades.filter(
+    (item) =>
+      item.marketSlug === trade.marketSlug &&
+      item.trader.toLowerCase() === trade.trader.toLowerCase() &&
+      !(item.txHash === trade.txHash && item.logIndex === trade.logIndex)
+  );
+  const profile = computeAnomalyProfile({
+    trade: { ...trade, oddsBps },
+    market: context.market,
+    recentTrades: marketScopedTrades,
+    traderHistory,
+    accountAgeDays: mockAccountAgeDays(trade.trader),
+  });
+
   return {
     sourceTradeId: trade.sourceTradeId,
-    marketId: marketContext.market.conditionId,
+    marketId: context.market.conditionId,
     trader: trade.trader,
     amount: trade.amount,
     direction: trade.direction,
     accountAgeDays: mockAccountAgeDays(trade.trader),
     oddsBps,
-    totalPositionUsd: computeTraderPositionUsd(trade),
-    marketTitle: marketContext.market.question || marketContext.market.slug || "Unknown market",
+    totalPositionUsd: profile.totalPositionUsd || computeTraderPositionUsd(trade),
+    anomalyFlags: profile.anomalyFlags,
+    riskScoreBps: profile.riskScoreBps,
+    recentTradeCount: profile.recentTradeCount,
+    sameSideStreak: profile.sameSideStreak,
+    counterpartyConcentrationBps: profile.counterpartyConcentrationBps,
+    marketImpactBps: profile.marketImpactBps,
+    washClusterScoreBps: profile.washClusterScoreBps,
+    smartMoneyScoreBps: profile.smartMoneyScoreBps,
+    marketTitle: context.market.question || context.market.slug || "Unknown market",
+    anomalyLabels: profile.labels,
+    marketSlug: getMarketKey(context.market),
+    polymarketUrl: context.polymarketUrl,
+  };
+}
+
+function toBridgeTuple(payload) {
+  return {
+    sourceTradeId: payload.sourceTradeId,
+    marketId: payload.marketId,
+    trader: payload.trader,
+    amount: payload.amount,
+    direction: payload.direction,
+    accountAgeDays: payload.accountAgeDays,
+    oddsBps: payload.oddsBps,
+    totalPositionUsd: payload.totalPositionUsd,
+    anomalyFlags: payload.anomalyFlags,
+    riskScoreBps: payload.riskScoreBps,
+    recentTradeCount: payload.recentTradeCount,
+    sameSideStreak: payload.sameSideStreak,
+    counterpartyConcentrationBps: payload.counterpartyConcentrationBps,
+    marketImpactBps: payload.marketImpactBps,
+    washClusterScoreBps: payload.washClusterScoreBps,
+    smartMoneyScoreBps: payload.smartMoneyScoreBps,
+    marketTitle: payload.marketTitle,
   };
 }
 
@@ -323,12 +586,28 @@ function decodePolymarketTrade(log) {
   const isBuy = makerAssetId === 0n;
   const trader = getAddress(isBuy ? decoded.args.maker : decoded.args.taker);
   const tokenId = isBuy ? takerAssetId : makerAssetId;
-  const direction = tokenId === marketContext.tokenIds.yesTokenId ? 0 : 1;
+  const tokenContext = tokenMarketIndex.get(tokenId.toString());
+  if (!tokenContext) {
+    return null;
+  }
+
+  const direction = tokenContext.direction;
+  const counterparty = getAddress(isBuy ? decoded.args.taker : decoded.args.maker);
 
   return {
-    sourceTradeId: decoded.args.orderHash,
+    sourceTradeId: keccak256(
+      encodePacked(
+        ["bytes32", "uint256", "bytes32"],
+        [decoded.args.orderHash, BigInt(log.logIndex), log.transactionHash]
+      )
+    ),
     txHash: log.transactionHash,
     trader,
+    counterparty,
+    marketSlug: getMarketKey(tokenContext.market),
+    marketTitle: tokenContext.market.question,
+    marketUrl: tokenContext.polymarketUrl,
+    marketId: tokenContext.market.conditionId,
     tokenId: tokenId.toString(),
     amount: isBuy ? makerAmountFilled : takerAmountFilled,
     shares: isBuy ? takerAmountFilled : makerAmountFilled,
@@ -346,6 +625,9 @@ function hydrateTradeForDashboard(trade, relayTxHash, signalProjection) {
   return {
     id: `${trade.txHash}-${trade.logIndex}`,
     sourceTradeId: trade.sourceTradeId,
+    marketSlug: trade.marketSlug,
+    marketTitle: trade.marketTitle,
+    marketUrl: trade.marketUrl,
     txHash: trade.txHash,
     relayTxHash,
     trader: trade.trader,
@@ -355,6 +637,9 @@ function hydrateTradeForDashboard(trade, relayTxHash, signalProjection) {
     side: trade.side,
     direction: trade.direction,
     directionLabel: trade.directionLabel,
+    anomalyLabels: trade.anomalyLabels || [],
+    riskScoreBps: trade.riskScoreBps || 0,
+    counterpartyLabel: trade.counterparty ? shortAddress(trade.counterparty) : "",
     blockNumber: trade.blockNumber,
     logIndex: trade.logIndex,
     exchange: trade.exchange,
@@ -364,41 +649,7 @@ function hydrateTradeForDashboard(trade, relayTxHash, signalProjection) {
 }
 
 async function projectSignal(payload) {
-  const reactiveAddress = state.config.reactiveAddress;
-  if (!reactiveAddress) {
-    return {
-      shouldEmit: false,
-      analysisCode: 0,
-      thesis: "Reactive contract address not configured.",
-    };
-  }
-
-  try {
-    const [shouldEmit, analysisCode, thesis] = await somniaPublicClient.readContract({
-      address: getAddress(reactiveAddress),
-      abi: reactiveAbi,
-      functionName: "previewSignal",
-      args: [
-        payload.amount,
-        payload.accountAgeDays,
-        payload.oddsBps,
-        payload.totalPositionUsd,
-        payload.direction,
-      ],
-    });
-
-    return {
-      shouldEmit,
-      analysisCode: Number(analysisCode),
-      thesis,
-    };
-  } catch (error) {
-    return {
-      shouldEmit: false,
-      analysisCode: 0,
-      thesis: `Signal preview unavailable: ${error.message}`,
-    };
-  }
+  return evaluateReactiveSignal(payload);
 }
 
 async function relayTrade(payload) {
@@ -409,13 +660,27 @@ async function relayTrade(payload) {
     return { skipped: true, reason: "Missing bridge contract address." };
   }
 
+  const gas = withGasBuffer(
+    await somniaPublicClient.estimateContractGas({
+      address: getAddress(state.config.bridgeAddress),
+      abi: tradeBridgeAbi,
+      functionName: "logTrade",
+      args: [toBridgeTuple(payload)],
+      account,
+      chain: somniaTestnet,
+      ...getSomniaTxOverrides(),
+    })
+  );
+
   const txHash = await somniaWalletClient.writeContract({
     address: getAddress(state.config.bridgeAddress),
     abi: tradeBridgeAbi,
     functionName: "logTrade",
-    args: [payload],
+    args: [toBridgeTuple(payload)],
     account,
     chain: somniaTestnet,
+    gas,
+    ...getSomniaTxOverrides(),
   });
 
   state.counters.tradesRelayed += 1;
@@ -426,15 +691,112 @@ function loadCursor() {
   const cursor = readJsonIfExists(CURSOR_PATH);
   return {
     lastProcessedBlock: cursor?.lastProcessedBlock ? BigInt(cursor.lastProcessedBlock) : null,
+    lastAlphaBlock: cursor?.lastAlphaBlock ? BigInt(cursor.lastAlphaBlock) : null,
     seenTradeIds: new Set(Array.isArray(cursor?.seenTradeIds) ? cursor.seenTradeIds : []),
+    seenAlphaIds: new Set(Array.isArray(cursor?.seenAlphaIds) ? cursor.seenAlphaIds : []),
   };
 }
 
 function saveCursor(cursor) {
   writeJson(CURSOR_PATH, {
     lastProcessedBlock: cursor.lastProcessedBlock ? cursor.lastProcessedBlock.toString() : null,
+    lastAlphaBlock: cursor.lastAlphaBlock ? cursor.lastAlphaBlock.toString() : null,
     seenTradeIds: [...cursor.seenTradeIds].slice(-1000),
+    seenAlphaIds: [...cursor.seenAlphaIds].slice(-1000),
   });
+}
+
+async function pollAlphaSignals(cursor) {
+  if (!state.config.reactiveAddress) {
+    return;
+  }
+
+  const latestBlock = await somniaPublicClient.getBlockNumber();
+  const fromBlock = cursor.lastAlphaBlock
+    ? cursor.lastAlphaBlock + 1n
+    : latestBlock > 200n
+      ? latestBlock - 200n
+      : 0n;
+
+  if (fromBlock > latestBlock) {
+    return;
+  }
+
+  const logs = [];
+  let startBlock = fromBlock;
+
+  while (startBlock <= latestBlock) {
+    const endBlock =
+      startBlock + SOMNIA_LOG_BLOCK_BATCH - 1n < latestBlock
+        ? startBlock + SOMNIA_LOG_BLOCK_BATCH - 1n
+        : latestBlock;
+
+    const chunkLogs = await somniaPublicClient.getLogs({
+      address: getAddress(state.config.reactiveAddress),
+      event: alphaSignalEvent,
+      fromBlock: startBlock,
+      toBlock: endBlock,
+    });
+
+    logs.push(...chunkLogs);
+    startBlock = endBlock + 1n;
+  }
+
+  for (const log of logs) {
+    const signalId = `${log.transactionHash}-${log.logIndex}`;
+    if (cursor.seenAlphaIds.has(signalId)) {
+      continue;
+    }
+
+    cursor.seenAlphaIds.add(signalId);
+    const args = log.args;
+    const marketId = String(args.marketId || "");
+    const marketSummary = state.markets.find(
+      (item) => item.conditionId && String(item.conditionId).toLowerCase() === marketId.toLowerCase()
+    );
+    const card = {
+      id: signalId,
+      txHash: log.transactionHash,
+      marketSlug: marketSummary?.slug || "",
+      marketUrl: marketSummary?.polymarketUrl || "",
+      trader: args.trader,
+      traderLabel: shortAddress(args.trader),
+      marketTitle: args.marketTitle,
+      amountUsd: formatUsd6(args.amount),
+      directionLabel: Number(args.direction) === 0 ? "YES" : "NO",
+      analysisCode: Number(args.analysisCode),
+      matchedFlags: Number(args.matchedFlags),
+      anomalyLabels: decodeAnomalyFlags(Number(args.matchedFlags)).map((item) => item.label),
+      riskScoreBps: Number(args.riskScoreBps),
+      oddsBps: Number(args.oddsBps),
+      totalPositionUsd: formatUsd6(args.totalPositionUsd),
+      thesis: args.thesis,
+      observedAt: new Date(Number(args.observedAt) * 1000).toISOString(),
+    };
+
+    state.alphaSignals = [card, ...state.alphaSignals].slice(0, 50);
+    state.counters.signalsObserved += 1;
+    if (marketSummary?.slug) {
+      updateMarketSummary(marketSummary.slug, (current) => ({
+        ...current,
+        alphaSignals: current.alphaSignals + 1,
+        lastAlphaAt: card.observedAt,
+        latestThesis: card.thesis || current.latestThesis,
+        lastAnomalies: card.anomalyLabels,
+      }));
+    }
+
+    pushEvent("alpha-signal", {
+      marketSlug: card.marketSlug,
+      marketTitle: card.marketTitle,
+      trader: card.traderLabel,
+      direction: card.directionLabel,
+      amountUsd: card.amountUsd,
+      anomalies: card.anomalyLabels.join(", "),
+    });
+  }
+
+  cursor.lastAlphaBlock = latestBlock;
 }
 
 async function getLogsForRange(fromBlock, toBlock) {
@@ -453,53 +815,105 @@ async function getLogsForRange(fromBlock, toBlock) {
     ],
   };
 
+  async function getLogsInChunks(address) {
+    const logs = [];
+    let startBlock = fromBlock;
+
+    while (startBlock <= toBlock) {
+      const endBlock =
+        startBlock + LOG_BLOCK_BATCH - 1n < toBlock
+          ? startBlock + LOG_BLOCK_BATCH - 1n
+          : toBlock;
+
+      const chunkLogs = await polygonClient.getLogs({
+        address,
+        event: eventDefinition,
+        fromBlock: startBlock,
+        toBlock: endBlock,
+      });
+
+      logs.push(...chunkLogs);
+      startBlock = endBlock + 1n;
+    }
+
+    return logs;
+  }
+
   const [binaryLogs, negRiskLogs] = await Promise.all([
-    polygonClient.getLogs({
-      address: CTF_EXCHANGE_ADDRESS,
-      event: eventDefinition,
-      fromBlock,
-      toBlock,
-    }),
-    polygonClient.getLogs({
-      address: NEG_RISK_EXCHANGE_ADDRESS,
-      event: eventDefinition,
-      fromBlock,
-      toBlock,
-    }),
+    getLogsInChunks(CTF_EXCHANGE_ADDRESS),
+    getLogsInChunks(NEG_RISK_EXCHANGE_ADDRESS),
   ]);
 
   return [...binaryLogs, ...negRiskLogs];
 }
 
-async function initializeMarketContext() {
-  const market = await fetchMarketBySlug(state.config.slug);
-  marketContext = {
-    market,
-    tokenIds: extractTokenIds(market),
-    outcomePrices: extractOutcomePrices(market),
-  };
+async function initializeMarketContexts() {
+  const previousActiveMarketSlug = state.activeMarketSlug;
+  const discoveredMarkets = state.config.trackAllActiveMarkets ? await fetchActiveMarkets() : [];
+  const slugMarkets = state.config.slugs.length
+    ? await Promise.all(state.config.slugs.map((slug) => fetchMarketBySlug(slug)))
+    : [];
+  const uniqueMarkets = new Map();
 
-  state.market = {
-    slug: market.slug,
-    question: market.question,
-    conditionId: market.conditionId,
-    volume: Number(market.volume || 0),
-    liquidity: Number(market.liquidity || 0),
-    outcomePrices: marketContext.outcomePrices,
-  };
+  for (const market of [...discoveredMarkets, ...slugMarkets]) {
+    if (!market?.conditionId) {
+      continue;
+    }
+    uniqueMarkets.set(String(market.conditionId).toLowerCase(), market);
+  }
+
+  marketContexts.clear();
+  tokenMarketIndex.clear();
+  state.markets = [];
+
+  for (const market of uniqueMarkets.values()) {
+    const tokenIds = extractTokenIds(market);
+    const context = {
+      market,
+      tokenIds,
+      outcomePrices: extractOutcomePrices(market),
+      polymarketUrl: toPolymarketUrl(market),
+    };
+    const marketKey = getMarketKey(market);
+
+    marketContexts.set(marketKey, context);
+    tokenMarketIndex.set(tokenIds.yesTokenId.toString(), { market, direction: 0, polymarketUrl: context.polymarketUrl });
+    tokenMarketIndex.set(tokenIds.noTokenId.toString(), { market, direction: 1, polymarketUrl: context.polymarketUrl });
+    upsertMarketSummary(buildMarketSummary(context));
+  }
+
+  if (
+    !previousActiveMarketSlug ||
+    !state.markets.some((market) => market.slug === previousActiveMarketSlug)
+  ) {
+    sortMarketSummaries();
+    state.activeMarketSlug = state.markets[0]?.slug || null;
+    syncPrimaryMarket();
+  }
+
+  state.lastMarketRefreshAt = new Date().toISOString();
 }
 
-async function ensureMarketContext() {
-  if (marketContext) {
+async function ensureMarketContexts() {
+  const refreshMs = Math.max(60_000, state.config.marketRefreshMs);
+  const hasFreshMarketContexts =
+    marketContexts.size > 0 &&
+    state.lastMarketRefreshAt &&
+    Date.now() - new Date(state.lastMarketRefreshAt).getTime() < refreshMs;
+
+  if (hasFreshMarketContexts) {
     return true;
   }
 
   try {
-    await initializeMarketContext();
-    pushEvent("market", {
-      slug: state.market.slug,
-      question: state.market.question,
-    });
+    await initializeMarketContexts();
+    for (const market of state.markets) {
+      pushEvent("market", {
+        slug: market.slug,
+        question: market.question,
+        polymarketUrl: market.polymarketUrl,
+      });
+    }
     return true;
   } catch (error) {
     recordError(new Error(`Unable to initialize market metadata: ${error.message}`));
@@ -514,8 +928,8 @@ async function pollOnce(cursor) {
   isPolling = true;
 
   try {
-    const hasMarketContext = await ensureMarketContext();
-    if (!hasMarketContext) {
+    const hasMarketContexts = await ensureMarketContexts();
+    if (!hasMarketContexts) {
       persistState();
       return;
     }
@@ -537,14 +951,9 @@ async function pollOnce(cursor) {
     }
 
     const logs = await getLogsForRange(fromBlock, latestBlock);
-    const trackedTokenIds = new Set([
-      marketContext.tokenIds.yesTokenId.toString(),
-      marketContext.tokenIds.noTokenId.toString(),
-    ]);
-
     const trades = logs
       .map(decodePolymarketTrade)
-      .filter((trade) => trackedTokenIds.has(trade.tokenId))
+      .filter(Boolean)
       .sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber - b.blockNumber));
 
     for (const trade of trades) {
@@ -560,39 +969,73 @@ async function pollOnce(cursor) {
         state.counters.signalsProjected += 1;
       }
 
-      let relayResult = { skipped: true, reason: "Trade below whale threshold." };
-      if (formatUsd6(trade.amount) >= state.config.minWhaleUsd) {
+      let relayResult = { skipped: true, reason: "Trade did not clear anomaly relay threshold." };
+      if (formatUsd6(trade.amount) >= state.config.minWhaleUsd || payload.anomalyFlags !== 0) {
         try {
           relayResult = await relayTrade(payload);
         } catch (error) {
-          state.counters.relayFailures += 1;
-          relayResult = { skipped: true, reason: error.message };
+          const normalized = normalizeRelayError(error);
+          if (!normalized.duplicate) {
+            state.counters.relayFailures += 1;
+          }
+          relayResult = { skipped: true, reason: normalized.message };
         }
       }
 
       const enrichedTrade = hydrateTradeForDashboard(
-        trade,
+        {
+          ...trade,
+          anomalyLabels: payload.anomalyLabels,
+          riskScoreBps: payload.riskScoreBps,
+        },
         relayResult.txHash || null,
         {
           ...signalProjection,
+          matchedLabels: decodeAnomalyFlags(signalProjection.matchedFlags || 0).map((item) => item.label),
           relayStatus: relayResult.skipped ? relayResult.reason : "Relayed to Somnia testnet",
         }
       );
 
       state.trades = [enrichedTrade, ...state.trades].slice(0, 50);
       updateAnalytics(enrichedTrade);
-
-      pushEvent("trade", {
-        market: state.market.question,
-        trader: enrichedTrade.traderLabel,
-        amountUsd: enrichedTrade.amountUsd,
-        direction: enrichedTrade.directionLabel,
-        relayTxHash: enrichedTrade.relayTxHash,
+      updateMarketSummary(trade.marketSlug, (current) => ({
+        ...current,
+        trackedVolumeUsd: current.trackedVolumeUsd + enrichedTrade.amountUsd,
+        suspiciousTrades:
+          current.suspiciousTrades +
+          (payload.anomalyFlags !== 0 || signalProjection.shouldEmit || enrichedTrade.relayTxHash ? 1 : 0),
+        relayedTrades: current.relayedTrades + (enrichedTrade.relayTxHash ? 1 : 0),
+        lastTradeAt: enrichedTrade.observedAt,
+        lastAnomalies: payload.anomalyLabels,
+        latestThesis: signalProjection.thesis || current.latestThesis,
+      }));
+      processedTrades.push({
+        ...trade,
+        oddsBps: payload.oddsBps,
+        anomalyFlags: payload.anomalyFlags,
+        riskScoreBps: payload.riskScoreBps,
       });
+      if (processedTrades.length > 500) {
+        processedTrades.shift();
+      }
+
+      if (payload.anomalyFlags !== 0 || signalProjection.shouldEmit || enrichedTrade.relayTxHash) {
+        pushEvent("trade", {
+          marketSlug: trade.marketSlug,
+          market: trade.marketTitle,
+          marketUrl: trade.marketUrl,
+          trader: enrichedTrade.traderLabel,
+          amountUsd: enrichedTrade.amountUsd,
+          direction: enrichedTrade.directionLabel,
+          anomalies: payload.anomalyLabels.join(", "),
+          relayTxHash: enrichedTrade.relayTxHash,
+        });
+      }
     }
 
     cursor.lastProcessedBlock = latestBlock;
     state.lastProcessedBlock = Number(latestBlock);
+    await pollAlphaSignals(cursor);
     state.status = "live";
     saveCursor(cursor);
     persistState();
@@ -612,8 +1055,8 @@ function serveFile(response, filePath, contentType) {
   response.end(fs.readFileSync(filePath));
 }
 
-function startHttpServer() {
-  const server = http.createServer((request, response) => {
+function createHttpServer() {
+  return http.createServer((request, response) => {
     const url = new URL(request.url, `http://${request.headers.host}`);
 
     if (url.pathname === "/api/state") {
@@ -646,15 +1089,68 @@ function startHttpServer() {
 
     serveFile(response, path.join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
   });
+}
 
-  server.listen(state.config.dashboardPort, () => {
-    console.log(`Dashboard listening on http://localhost:${state.config.dashboardPort}`);
+function listenOnPort(server, port) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    };
+
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const onListening = () => {
+      cleanup();
+      resolve();
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port);
   });
+}
+
+async function startHttpServer() {
+  const basePort = Number(state.config.dashboardPort || 3000);
+
+  for (let offset = 0; offset <= PORT_SEARCH_LIMIT; offset += 1) {
+    const candidatePort = basePort + offset;
+    const server = createHttpServer();
+
+    try {
+      await listenOnPort(server, candidatePort);
+      state.config.dashboardPort = candidatePort;
+      httpServer = server;
+      if (candidatePort !== basePort) {
+        console.log(
+          `Port ${basePort} is busy. Dashboard automatically moved to http://localhost:${candidatePort}`
+        );
+      } else {
+        console.log(`Dashboard listening on http://localhost:${candidatePort}`);
+      }
+      return;
+    } catch (error) {
+      server.close();
+      if (error.code === "EADDRINUSE" && PORT_AUTO_INCREMENT && offset < PORT_SEARCH_LIMIT) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(
+    `Unable to bind dashboard port. Tried ports ${basePort}-${basePort + PORT_SEARCH_LIMIT}.`
+  );
 }
 
 async function start() {
   ensureRuntimeDir();
-  startHttpServer();
+  await startHttpServer();
 
   state.status = "initializing";
   persistState();
@@ -676,6 +1172,9 @@ async function start() {
 process.on("SIGINT", () => {
   if (pollTimer) {
     clearInterval(pollTimer);
+  }
+  if (httpServer) {
+    httpServer.close();
   }
   process.exit(0);
 });

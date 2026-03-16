@@ -1,46 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.20;
 
-import {IPolymarketTradeBridge} from "./interfaces/IPolymarketTradeBridge.sol";
-import {ISomniaEventHandler} from "./interfaces/ISomniaEventHandler.sol";
-import {ISomniaReactivityPrecompile} from "./interfaces/ISomniaReactivityPrecompile.sol";
-import {SomniaEventHandler} from "./vendor/SomniaEventHandler.sol";
-
-contract PolySignalReactive is SomniaEventHandler {
-    enum AnalysisCode {
-        NONE,
-        NEW_WALLET_WHALE,
-        ESTABLISHED_WHALE
-    }
-
-    struct SignalConfig {
-        uint256 whaleThresholdUsd;
-        uint64 newWalletMaxAgeDays;
-        uint32 convictionOddsFloorBps;
-        uint256 minTotalPositionUsd;
-    }
-
-    struct BridgedTradePayload {
-        bytes32 sourceTradeId;
-        bytes32 marketId;
-        address trader;
-        uint256 amount;
-        uint8 direction;
-        uint64 accountAgeDays;
-        uint32 oddsBps;
-        uint256 totalPositionUsd;
-        uint64 observedAt;
-        string marketTitle;
-    }
-
-    event SubscriptionCreated(uint256 indexed subscriptionId);
-    event SubscriptionCancelled(uint256 indexed subscriptionId);
-    event ConfigUpdated(
-        uint256 whaleThresholdUsd,
-        uint64 newWalletMaxAgeDays,
-        uint32 convictionOddsFloorBps,
-        uint256 minTotalPositionUsd
-    );
+contract PolySignalReactive {
     event AlphaSignal(
         bytes32 indexed marketId,
         address indexed trader,
@@ -48,6 +9,9 @@ contract PolySignalReactive is SomniaEventHandler {
         uint256 amount,
         uint8 direction,
         uint8 analysisCode,
+        uint16 matchedFlags,
+        uint16 relayedFlags,
+        uint16 riskScoreBps,
         uint32 oddsBps,
         uint256 totalPositionUsd,
         uint64 observedAt,
@@ -55,144 +19,42 @@ contract PolySignalReactive is SomniaEventHandler {
         string thesis
     );
 
-    error NotOwner(address caller);
+    error NotSomniaReactivity(address caller);
     error UnexpectedEmitter(address emitter);
     error UnknownTradeEvent();
 
-    bytes32 public constant TRADE_BRIDGED_TOPIC =
+    uint16 internal constant FLAG_NEW_WALLET_WHALE = 1 << 0;
+    uint16 internal constant FLAG_HIGH_CONVICTION_ENTRY = 1 << 1;
+    uint16 internal constant FLAG_RAPID_ACCUMULATION = 1 << 2;
+    uint16 internal constant FLAG_SAME_SIDE_STREAK = 1 << 3;
+    uint16 internal constant FLAG_COUNTERPARTY_CONCENTRATION = 1 << 4;
+    uint16 internal constant FLAG_MARKET_IMPACT_SPIKE = 1 << 5;
+    uint16 internal constant FLAG_WASH_CLUSTER = 1 << 6;
+    uint16 internal constant FLAG_SMART_MONEY_FOLLOWTHROUGH = 1 << 7;
+
+    bytes32 internal constant TRADE_BRIDGED_TOPIC =
         keccak256(
-            "TradeBridged(bytes32,bytes32,address,uint256,uint8,uint64,uint32,uint256,uint64,string)"
+            "TradeBridged(bytes32,bytes32,address,uint256,uint8,uint64,uint32,uint256,uint16,uint16,uint16,uint16,uint16,uint16,uint16,uint16,uint64,string)"
         );
 
-    address public owner;
-    address public immutable sourceMarketData;
-    ISomniaReactivityPrecompile public immutable somniaReactivity;
+    address public sourceMarketData;
+    address public somniaReactivityPrecompile;
 
-    uint256 public subscriptionId;
-    SignalConfig public signalConfig;
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) {
-            revert NotOwner(msg.sender);
-        }
-        _;
-    }
-
-    constructor(
-        address initialOwner,
-        address sourceMarketData_,
-        address precompileAddress
-    ) SomniaEventHandler(precompileAddress) {
-        owner = initialOwner == address(0) ? msg.sender : initialOwner;
+    constructor(address sourceMarketData_, address precompileAddress) {
         sourceMarketData = sourceMarketData_;
-        somniaReactivity = ISomniaReactivityPrecompile(somniaReactivityPrecompile);
-
-        signalConfig = SignalConfig({
-            whaleThresholdUsd: 25_000e6,
-            newWalletMaxAgeDays: 7,
-            convictionOddsFloorBps: 1_500,
-            minTotalPositionUsd: 50_000e6
-        });
+        somniaReactivityPrecompile = precompileAddress == address(0)
+            ? address(0x0100)
+            : precompileAddress;
     }
 
-    function setSignalConfig(
-        uint256 whaleThresholdUsd,
-        uint64 newWalletMaxAgeDays,
-        uint32 convictionOddsFloorBps,
-        uint256 minTotalPositionUsd
-    ) external onlyOwner {
-        signalConfig = SignalConfig({
-            whaleThresholdUsd: whaleThresholdUsd,
-            newWalletMaxAgeDays: newWalletMaxAgeDays,
-            convictionOddsFloorBps: convictionOddsFloorBps,
-            minTotalPositionUsd: minTotalPositionUsd
-        });
-
-        emit ConfigUpdated(
-            whaleThresholdUsd,
-            newWalletMaxAgeDays,
-            convictionOddsFloorBps,
-            minTotalPositionUsd
-        );
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
-    }
-
-    function createSubscription(
-        uint256 priorityFeePerGas,
-        uint256 maxFeePerGas,
-        uint256 gasLimit,
-        bool isGuaranteed,
-        bool isCoalesced
-    ) external onlyOwner returns (uint256 newSubscriptionId) {
-        bytes32[4] memory eventTopics = [
-            TRADE_BRIDGED_TOPIC,
-            bytes32(0),
-            bytes32(0),
-            bytes32(0)
-        ];
-
-        ISomniaReactivityPrecompile.SubscriptionData
-            memory subscriptionData = ISomniaReactivityPrecompile.SubscriptionData({
-                eventTopics: eventTopics,
-                origin: address(0),
-                caller: address(0),
-                emitter: sourceMarketData,
-                handlerContractAddress: address(this),
-                handlerFunctionSelector: ISomniaEventHandler.onEvent.selector,
-                priorityFeePerGas: priorityFeePerGas,
-                maxFeePerGas: maxFeePerGas,
-                gasLimit: gasLimit,
-                isGuaranteed: isGuaranteed,
-                isCoalesced: isCoalesced
-            });
-
-        newSubscriptionId = somniaReactivity.subscribe(subscriptionData);
-        subscriptionId = newSubscriptionId;
-        emit SubscriptionCreated(newSubscriptionId);
-    }
-
-    function cancelSubscription() external onlyOwner {
-        uint256 existingSubscriptionId = subscriptionId;
-        if (existingSubscriptionId == 0) {
-            return;
-        }
-
-        somniaReactivity.unsubscribe(existingSubscriptionId);
-        subscriptionId = 0;
-        emit SubscriptionCancelled(existingSubscriptionId);
-    }
-
-    function previewSignal(
-        uint256 amount,
-        uint64 accountAgeDays,
-        uint32 oddsBps,
-        uint256 totalPositionUsd,
-        uint8 direction
-    ) external view returns (bool shouldEmit, uint8 analysisCode, string memory thesis) {
-        BridgedTradePayload memory trade = BridgedTradePayload({
-            sourceTradeId: bytes32(0),
-            marketId: bytes32(0),
-            trader: address(0),
-            amount: amount,
-            direction: direction,
-            accountAgeDays: accountAgeDays,
-            oddsBps: oddsBps,
-            totalPositionUsd: totalPositionUsd,
-            observedAt: 0,
-            marketTitle: ""
-        });
-
-        return _evaluate(trade);
-    }
-
-    function _onEvent(
+    function onEvent(
         address emitter,
         bytes32[] calldata eventTopics,
         bytes calldata data
-    ) internal override {
+    ) external {
+        if (msg.sender != somniaReactivityPrecompile) {
+            revert NotSomniaReactivity(msg.sender);
+        }
         if (emitter != sourceMarketData) {
             revert UnexpectedEmitter(emitter);
         }
@@ -200,96 +62,83 @@ contract PolySignalReactive is SomniaEventHandler {
             revert UnknownTradeEvent();
         }
 
-        BridgedTradePayload memory trade = _decodeTrade(eventTopics, data);
-        (bool shouldEmit, uint8 analysisCode, string memory thesis) = _evaluate(trade);
-
-        if (!shouldEmit) {
-            return;
-        }
-
-        emit AlphaSignal(
-            trade.marketId,
-            trade.trader,
-            trade.sourceTradeId,
-            trade.amount,
-            trade.direction,
-            analysisCode,
-            trade.oddsBps,
-            trade.totalPositionUsd,
-            trade.observedAt,
-            trade.marketTitle,
-            thesis
-        );
-    }
-
-    function _decodeTrade(
-        bytes32[] calldata eventTopics,
-        bytes calldata data
-    ) internal pure returns (BridgedTradePayload memory trade) {
         (
             uint256 amount,
             uint8 direction,
             uint64 accountAgeDays,
             uint32 oddsBps,
             uint256 totalPositionUsd,
+            uint16 relayedFlags,
+            uint16 relayedRiskScoreBps,
+            uint16 recentTradeCount,
+            uint16 sameSideStreak,
+            uint16 counterpartyConcentrationBps,
+            uint16 marketImpactBps,
+            uint16 washClusterScoreBps,
+            uint16 smartMoneyScoreBps,
             uint64 observedAt,
             string memory marketTitle
-        ) = abi.decode(data, (uint256, uint8, uint64, uint32, uint256, uint64, string));
+        ) = abi.decode(
+            data,
+            (uint256, uint8, uint64, uint32, uint256, uint16, uint16, uint16, uint16, uint16, uint16, uint16, uint16, uint64, string)
+        );
 
-        trade = BridgedTradePayload({
-            sourceTradeId: eventTopics[1],
-            marketId: eventTopics[2],
-            trader: _topicToAddress(eventTopics[3]),
-            amount: amount,
-            direction: direction,
-            accountAgeDays: accountAgeDays,
-            oddsBps: oddsBps,
-            totalPositionUsd: totalPositionUsd,
-            observedAt: observedAt,
-            marketTitle: marketTitle
-        });
-    }
-
-    function _evaluate(
-        BridgedTradePayload memory trade
-    ) internal view returns (bool shouldEmit, uint8 analysisCode, string memory thesis) {
-        SignalConfig memory config = signalConfig;
-
-        bool whaleSize = trade.amount >= config.whaleThresholdUsd;
-        bool newWallet = trade.accountAgeDays <= config.newWalletMaxAgeDays;
-        bool strongConviction = trade.oddsBps >= config.convictionOddsFloorBps;
-        bool largePosition = trade.totalPositionUsd >= config.minTotalPositionUsd;
-
-        if (whaleSize && newWallet && strongConviction) {
-            thesis = string(
-                abi.encodePacked(
-                    "New wallet whale: a fresh address entered ",
-                    _directionLabel(trade.direction),
-                    " with size above threshold and conviction above the configured floor."
-                )
-            );
-            return (true, uint8(AnalysisCode.NEW_WALLET_WHALE), thesis);
+        uint16 matchedFlags;
+        if (amount >= 25_000e6 && accountAgeDays <= 7) matchedFlags |= FLAG_NEW_WALLET_WHALE;
+        if (oddsBps >= 6_000 && amount >= 12_500e6) matchedFlags |= FLAG_HIGH_CONVICTION_ENTRY;
+        if (recentTradeCount >= 3 && totalPositionUsd >= 40_000e6) {
+            matchedFlags |= FLAG_RAPID_ACCUMULATION;
         }
-
-        if (whaleSize && largePosition && strongConviction) {
-            thesis = string(
-                abi.encodePacked(
-                    "Established whale: a tracked wallet increased a high-conviction position to notable size on ",
-                    _directionLabel(trade.direction),
-                    "."
-                )
-            );
-            return (true, uint8(AnalysisCode.ESTABLISHED_WHALE), thesis);
+        if (sameSideStreak >= 3) matchedFlags |= FLAG_SAME_SIDE_STREAK;
+        if (counterpartyConcentrationBps >= 6_500) {
+            matchedFlags |= FLAG_COUNTERPARTY_CONCENTRATION;
         }
+        if (marketImpactBps >= 450) matchedFlags |= FLAG_MARKET_IMPACT_SPIKE;
+        if (washClusterScoreBps >= 6_000) matchedFlags |= FLAG_WASH_CLUSTER;
+        if (smartMoneyScoreBps >= 7_000) matchedFlags |= FLAG_SMART_MONEY_FOLLOWTHROUGH;
+        if (matchedFlags == 0) return;
 
-        return (false, uint8(AnalysisCode.NONE), "");
-    }
+        uint16 derivedRisk;
+        if ((matchedFlags & FLAG_NEW_WALLET_WHALE) != 0) derivedRisk += 2200;
+        if ((matchedFlags & FLAG_HIGH_CONVICTION_ENTRY) != 0) derivedRisk += 1200;
+        if ((matchedFlags & FLAG_RAPID_ACCUMULATION) != 0) derivedRisk += 1300;
+        if ((matchedFlags & FLAG_SAME_SIDE_STREAK) != 0) derivedRisk += 900;
+        if ((matchedFlags & FLAG_COUNTERPARTY_CONCENTRATION) != 0) derivedRisk += 1200;
+        if ((matchedFlags & FLAG_MARKET_IMPACT_SPIKE) != 0) derivedRisk += 1300;
+        if ((matchedFlags & FLAG_WASH_CLUSTER) != 0) derivedRisk += 1600;
+        if ((matchedFlags & FLAG_SMART_MONEY_FOLLOWTHROUGH) != 0) derivedRisk += 1500;
+        if (derivedRisk > 10_000) derivedRisk = 10_000;
 
-    function _directionLabel(uint8 direction) internal pure returns (string memory) {
-        return direction == uint8(IPolymarketTradeBridge.TradeDirection.YES) ? "YES" : "NO";
-    }
+        uint16 finalRiskScoreBps = derivedRisk > relayedRiskScoreBps
+            ? derivedRisk
+            : relayedRiskScoreBps;
+        if (finalRiskScoreBps < 3_000) return;
 
-    function _topicToAddress(bytes32 topicValue) internal pure returns (address) {
-        return address(uint160(uint256(topicValue)));
+        uint8 analysisCode = 0;
+        if ((matchedFlags & FLAG_NEW_WALLET_WHALE) != 0) analysisCode = 1;
+        else if ((matchedFlags & FLAG_SMART_MONEY_FOLLOWTHROUGH) != 0) analysisCode = 8;
+        else if ((matchedFlags & FLAG_WASH_CLUSTER) != 0) analysisCode = 7;
+        else if ((matchedFlags & FLAG_MARKET_IMPACT_SPIKE) != 0) analysisCode = 6;
+        else if ((matchedFlags & FLAG_COUNTERPARTY_CONCENTRATION) != 0) analysisCode = 5;
+        else if ((matchedFlags & FLAG_RAPID_ACCUMULATION) != 0) analysisCode = 3;
+        else if ((matchedFlags & FLAG_SAME_SIDE_STREAK) != 0) analysisCode = 4;
+        else if ((matchedFlags & FLAG_HIGH_CONVICTION_ENTRY) != 0) analysisCode = 2;
+
+        emit AlphaSignal(
+            eventTopics[2],
+            address(uint160(uint256(eventTopics[3]))),
+            eventTopics[1],
+            amount,
+            direction,
+            analysisCode,
+            matchedFlags,
+            relayedFlags,
+            finalRiskScoreBps,
+            oddsBps,
+            totalPositionUsd,
+            observedAt,
+            marketTitle,
+            ""
+        );
     }
 }

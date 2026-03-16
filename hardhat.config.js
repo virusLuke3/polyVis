@@ -8,16 +8,24 @@ const {
   POLYGON_RPC_URL,
 } = process.env;
 
-const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
+const normalizedPrivateKey =
+  PRIVATE_KEY && !PRIVATE_KEY.startsWith("0x") ? `0x${PRIVATE_KEY}` : PRIVATE_KEY;
+const validPrivateKey =
+  normalizedPrivateKey && /^0x[a-fA-F0-9]{64}$/.test(normalizedPrivateKey)
+    ? normalizedPrivateKey
+    : null;
+const accounts = validPrivateKey ? [validPrivateKey] : [];
 
 module.exports = {
   solidity: {
-    version: "0.8.28",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
         runs: 200,
       },
+      viaIR: true,
+      evmVersion: "paris",
     },
   },
   networks: {

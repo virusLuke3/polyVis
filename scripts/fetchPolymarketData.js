@@ -1,4 +1,6 @@
 require("dotenv").config();
+const { applyClashProxyEnv } = require("./lib/proxy");
+applyClashProxyEnv();
 
 const fs = require("fs");
 const path = require("path");
@@ -7,10 +9,26 @@ const { createPublicClient, decodeEventLog, defineChain, http, parseAbi } = requ
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 const NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+const LOG_BLOCK_BATCH = BigInt(process.env.POLYMARKET_LOG_BLOCK_BATCH || 1000);
 
 const orderFilledAbi = parseAbi([
   "event OrderFilled(bytes32 indexed orderHash, address indexed maker, address indexed taker, uint256 makerAssetId, uint256 takerAssetId, uint256 makerAmountFilled, uint256 takerAmountFilled, uint256 fee)",
 ]);
+
+const orderFilledEvent = {
+  type: "event",
+  name: "OrderFilled",
+  inputs: [
+    { indexed: true, name: "orderHash", type: "bytes32" },
+    { indexed: true, name: "maker", type: "address" },
+    { indexed: true, name: "taker", type: "address" },
+    { indexed: false, name: "makerAssetId", type: "uint256" },
+    { indexed: false, name: "takerAssetId", type: "uint256" },
+    { indexed: false, name: "makerAmountFilled", type: "uint256" },
+    { indexed: false, name: "takerAmountFilled", type: "uint256" },
+    { indexed: false, name: "fee", type: "uint256" },
+  ],
+};
 
 const polygon = defineChain({
   id: 137,
@@ -104,50 +122,38 @@ function decodeTrade(log) {
   };
 }
 
+async function getLogsInChunks(address, fromBlock, toBlock) {
+  const logs = [];
+  let startBlock = fromBlock;
+
+  while (startBlock <= toBlock) {
+    const endBlock =
+      startBlock + LOG_BLOCK_BATCH - 1n < toBlock
+        ? startBlock + LOG_BLOCK_BATCH - 1n
+        : toBlock;
+
+    const chunkLogs = await polygonClient.getLogs({
+      address,
+      event: orderFilledEvent,
+      fromBlock: startBlock,
+      toBlock: endBlock,
+    });
+
+    logs.push(...chunkLogs);
+    startBlock = endBlock + 1n;
+  }
+
+  return logs;
+}
+
 async function fetchRecentTradesForMarket(market, blocksBack) {
   const latestBlock = await polygonClient.getBlockNumber();
   const fromBlock = latestBlock > blocksBack ? latestBlock - blocksBack : 0n;
   const tokenIds = new Set(extractTokenIds(market).map((value) => value.toString()));
 
   const [binaryLogs, negRiskLogs] = await Promise.all([
-    polygonClient.getLogs({
-      address: CTF_EXCHANGE_ADDRESS,
-      event: {
-        type: "event",
-        name: "OrderFilled",
-        inputs: [
-          { indexed: true, name: "orderHash", type: "bytes32" },
-          { indexed: true, name: "maker", type: "address" },
-          { indexed: true, name: "taker", type: "address" },
-          { indexed: false, name: "makerAssetId", type: "uint256" },
-          { indexed: false, name: "takerAssetId", type: "uint256" },
-          { indexed: false, name: "makerAmountFilled", type: "uint256" },
-          { indexed: false, name: "takerAmountFilled", type: "uint256" },
-          { indexed: false, name: "fee", type: "uint256" },
-        ],
-      },
-      fromBlock,
-      toBlock: latestBlock,
-    }),
-    polygonClient.getLogs({
-      address: NEG_RISK_EXCHANGE_ADDRESS,
-      event: {
-        type: "event",
-        name: "OrderFilled",
-        inputs: [
-          { indexed: true, name: "orderHash", type: "bytes32" },
-          { indexed: true, name: "maker", type: "address" },
-          { indexed: true, name: "taker", type: "address" },
-          { indexed: false, name: "makerAssetId", type: "uint256" },
-          { indexed: false, name: "takerAssetId", type: "uint256" },
-          { indexed: false, name: "makerAmountFilled", type: "uint256" },
-          { indexed: false, name: "takerAmountFilled", type: "uint256" },
-          { indexed: false, name: "fee", type: "uint256" },
-        ],
-      },
-      fromBlock,
-      toBlock: latestBlock,
-    }),
+    getLogsInChunks(CTF_EXCHANGE_ADDRESS, fromBlock, latestBlock),
+    getLogsInChunks(NEG_RISK_EXCHANGE_ADDRESS, fromBlock, latestBlock),
   ]);
 
   return [...binaryLogs, ...negRiskLogs]

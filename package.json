@@ -7,8 +7,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "compile": "hardhat compile",
-    "deploy:somnia": "hardhat run scripts/deploy.js --network somniaTestnet",
+    "compile": "forge build",
+    "compile:hardhat": "hardhat compile",
+    "deploy:somnia": "bash scripts/deploy-foundry.sh",
+    "subscribe:somnia": "bash scripts/create-subscription.sh",
+    "somnia:chain-id": "bash scripts/somnia-chain-id.sh",
+    "relayer:address": "bash scripts/get-relayer-address.sh",
+    "doctor": "bash scripts/doctor.sh",
     "fetch:polymarket": "node scripts/fetchPolymarketData.js",
     "relay:trade": "node scripts/relayPolymarketTrade.js",
     "start": "node scripts/startRealtimeDashboard.js"
@@ -18,5 +23,8 @@
     "dotenv": "^16.4.7",
     "hardhat": "^2.22.19",
     "viem": "^2.21.57"
+  },
+  "dependencies": {
+    "@somnia-chain/reactivity": "^0.1.10"
   }
 }

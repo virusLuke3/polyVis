@@ -3,47 +3,174 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PolySignal Live Dashboard</title>
+    <title>PolySignal Reactive Trading Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Polymarket x Somnia Testnet</p>
-          <h1 id="market-question">Loading market...</h1>
-          <p id="market-meta" class="muted">Connecting to Polygon and Somnia.</p>
-        </div>
-        <div class="status-card">
-          <span class="status-dot" id="status-dot"></span>
+    <div class="noise"></div>
+    <main class="terminal-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark">PS</div>
           <div>
-            <p class="label">System status</p>
-            <h2 id="system-status">Booting</h2>
+            <p class="micro-label">Somnia Reactive Advisory</p>
+            <h1 class="brand-name">POLYSIGNAL</h1>
           </div>
+        </div>
+
+        <nav class="topnav">
+          <a href="#hero">Signals</a>
+          <a href="#reactivity-proof">Reactivity</a>
+          <a href="#alpha-feed">Alpha Feed</a>
+          <a href="#trade-tape">Trade Tape</a>
+          <a href="#event-bus">Event Bus</a>
+        </nav>
+
+        <div class="topbar-actions">
+          <span class="wallet-chip" id="premium-status">PREMIUM LOCKED</span>
+          <button class="terminal-button terminal-button-orange connect-wallet-button" id="connect-wallet">
+            CONNECT WALLET
+          </button>
+        </div>
+      </header>
+
+      <section class="ticker">
+        <div class="ticker-track" id="ticker-track">
+          <span>REACTIVE POLYSIGNAL FEED</span>
+          <span id="ticker-status">BOOTING CONNECTIONS</span>
+          <span id="ticker-market">SYNCING MARKET DATA</span>
+          <span id="ticker-alpha">ALPHA COUNT 0</span>
+          <span id="ticker-volume">TRACKED VOLUME $0</span>
+          <span>POLYGON TO SOMNIA ADVISORY LOOP ACTIVE</span>
         </div>
       </section>
 
-      <section class="metrics" id="metrics"></section>
+      <section class="hero-grid" id="hero">
+        <article class="hero-copy panel panel-hero">
+          <p class="micro-label accent-green">REAL-TIME SOMNIA REACTIVITY</p>
+          <h2 class="hero-title">
+            ON-CHAIN
+            <span class="accent-orange">TRADING SIGNALS.</span>
+            <span class="accent-blue">SUSPICIOUS FLOW.</span>
+            EXECUTABLE CONTEXT.
+          </h2>
+          <p class="hero-body" id="market-meta">
+            Connecting to Polygon, Gamma, and the Somnia reactivity pipeline.
+          </p>
 
-      <section class="grid">
-        <article class="panel">
-          <div class="panel-head">
-            <h3>Live Trades</h3>
-            <p>Streaming filtered Polymarket fills</p>
+          <div class="market-actions" id="market-actions"></div>
+
+          <div class="hero-cta">
+            <a class="terminal-button terminal-button-green" href="#alpha-feed">VIEW ALPHA FEED</a>
+            <a class="terminal-button terminal-button-orange" href="#trade-tape">OPEN TRADE TAPE</a>
+            <a class="terminal-button terminal-button-ghost" href="#event-bus">SYSTEM BUS</a>
           </div>
-          <div id="trades" class="trade-list"></div>
         </article>
 
-        <article class="panel">
-          <div class="panel-head">
-            <h3>Signal Feed</h3>
-            <p>Projected dashboard analysis plus relay outcome</p>
+        <aside class="hero-stack">
+          <article class="panel status-console">
+            <div class="panel-kicker">
+              <span class="status-dot" id="status-dot"></span>
+              <span>Runtime status</span>
+            </div>
+            <h3 id="system-status">Booting</h3>
+            <p class="status-subcopy">Reactive subscriptions, relay health, and dashboard stream state.</p>
+          </article>
+
+          <article class="panel code-console">
+            <div class="code-header">
+              <span>Reactive thesis</span>
+              <span class="code-pill">ON-CHAIN</span>
+            </div>
+            <pre id="hero-thesis"><code>$ waiting for first alpha signal
+// Somnia contract callback armed
+// listening for suspicious Polymarket flow</code></pre>
+          </article>
+        </aside>
+      </section>
+
+      <section class="reactivity-band" id="reactivity-proof">
+        <article class="panel reactivity-panel">
+          <div class="panel-header">
+            <div>
+              <p class="micro-label">Hackathon Proof</p>
+              <h3>Somnia Reactivity Evidence Chain</h3>
+            </div>
+            <span class="header-chip">NATIVE ON-CHAIN</span>
           </div>
-          <div id="events" class="event-list"></div>
+
+          <p class="reactivity-copy" id="reactivity-copy">
+            The relayer only forwards Polymarket flow into Somnia. The actual trigger logic happens after the bridge event, inside the Somnia reactive contract callback.
+          </p>
+
+          <div id="reactivity-steps" class="reactivity-steps"></div>
+          <div id="reactivity-proof-grid" class="reactivity-proof-grid"></div>
         </article>
+      </section>
+
+      <section class="market-band">
+        <article class="panel market-directory-panel">
+          <div class="panel-header">
+            <div>
+              <p class="micro-label">Market Directory</p>
+              <h3>Tracked Dashboards</h3>
+            </div>
+            <span class="header-chip">FILTER + LINKOUT</span>
+          </div>
+          <div class="market-directory-toolbar">
+            <input id="market-search" class="market-search-input" type="search" placeholder="Search active markets..." />
+            <span id="market-directory-summary" class="market-directory-summary">loading...</span>
+          </div>
+          <div id="market-directory" class="market-directory"></div>
+          <div class="market-pagination" id="market-pagination"></div>
+        </article>
+      </section>
+
+      <section class="metrics-grid" id="metrics"></section>
+
+      <section class="terminal-grid">
+        <article class="panel alpha-panel" id="alpha-feed">
+          <div class="panel-header">
+            <div>
+              <p class="micro-label">Somnia Output</p>
+              <h3>Alpha Signal Feed</h3>
+            </div>
+            <span class="header-chip" id="alpha-header-chip">0 signals</span>
+          </div>
+          <div id="alpha-signals" class="signal-feed"></div>
+        </article>
+
+        <div class="terminal-stack">
+          <article class="panel compact-panel" id="trade-tape">
+            <div class="panel-header">
+              <div>
+                <p class="micro-label">Polymarket Tape</p>
+                <h3>Live Trades</h3>
+              </div>
+            </div>
+            <div id="trades" class="trade-tape"></div>
+          </article>
+
+          <article class="panel compact-panel" id="event-bus">
+            <div class="panel-header">
+              <div>
+                <p class="micro-label">Pipeline Telemetry</p>
+                <h3>System Event Bus</h3>
+              </div>
+            </div>
+            <div id="events" class="event-stream"></div>
+          </article>
+        </div>
       </section>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.5/dist/ethers.umd.min.js"></script>
     <script src="/app.js"></script>
   </body>
   </html>
