@@ -6,3 +6,4 @@ dist/
 out/
 .env
 .DS_Store
+data/runtime/

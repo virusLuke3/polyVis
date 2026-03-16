@@ -10,7 +10,8 @@
     "compile": "hardhat compile",
     "deploy:somnia": "hardhat run scripts/deploy.js --network somniaTestnet",
     "fetch:polymarket": "node scripts/fetchPolymarketData.js",
-    "relay:trade": "node scripts/relayPolymarketTrade.js"
+    "relay:trade": "node scripts/relayPolymarketTrade.js",
+    "start": "node scripts/startRealtimeDashboard.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

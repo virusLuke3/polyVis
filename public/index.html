@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PolySignal Live Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Polymarket x Somnia Testnet</p>
+          <h1 id="market-question">Loading market...</h1>
+          <p id="market-meta" class="muted">Connecting to Polygon and Somnia.</p>
+        </div>
+        <div class="status-card">
+          <span class="status-dot" id="status-dot"></span>
+          <div>
+            <p class="label">System status</p>
+            <h2 id="system-status">Booting</h2>
+          </div>
+        </div>
+      </section>
+
+      <section class="metrics" id="metrics"></section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h3>Live Trades</h3>
+            <p>Streaming filtered Polymarket fills</p>
+          </div>
+          <div id="trades" class="trade-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h3>Signal Feed</h3>
+            <p>Projected dashboard analysis plus relay outcome</p>
+          </div>
+          <div id="events" class="event-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

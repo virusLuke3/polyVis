@@ -12,19 +12,19 @@ async function main() {
   console.log("Relayer:", relayerAddress);
   console.log("Somnia precompile:", precompileAddress);
 
-  const MockPolymarket = await ethers.getContractFactory("MockPolymarket");
-  const mockPolymarket = await MockPolymarket.deploy(deployer.address, relayerAddress);
-  await mockPolymarket.waitForDeployment();
+  const PolymarketTradeBridge = await ethers.getContractFactory("PolymarketTradeBridge");
+  const tradeBridge = await PolymarketTradeBridge.deploy(deployer.address, relayerAddress);
+  await tradeBridge.waitForDeployment();
 
   const PolySignalReactive = await ethers.getContractFactory("PolySignalReactive");
   const reactive = await PolySignalReactive.deploy(
     deployer.address,
-    await mockPolymarket.getAddress(),
+    await tradeBridge.getAddress(),
     precompileAddress
   );
   await reactive.waitForDeployment();
 
-  console.log("MockPolymarket:", await mockPolymarket.getAddress());
+  console.log("PolymarketTradeBridge:", await tradeBridge.getAddress());
   console.log("PolySignalReactive:", await reactive.getAddress());
 }
 

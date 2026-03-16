@@ -21,7 +21,7 @@ const polymarketOrderFilledAbi = parseAbi([
   "event OrderFilled(bytes32 indexed orderHash, address indexed maker, address indexed taker, uint256 makerAssetId, uint256 takerAssetId, uint256 makerAmountFilled, uint256 takerAmountFilled, uint256 fee)",
 ]);
 
-const mockPolymarketAbi = parseAbi([
+const tradeBridgeAbi = parseAbi([
   "function logTrade((bytes32 sourceTradeId, bytes32 marketId, address trader, uint256 amount, uint8 direction, uint64 accountAgeDays, uint32 oddsBps, uint256 totalPositionUsd, string marketTitle) tradeInput) returns (uint64 sequence)",
 ]);
 
@@ -280,7 +280,8 @@ async function main() {
     transport: http(),
   });
 
-  const mockPolymarketAddress = requireEnv("MOCK_POLYMARKET_ADDRESS");
+  const tradeBridgeAddress =
+    process.env.POLYMARKET_TRADE_BRIDGE_ADDRESS || requireEnv("MOCK_POLYMARKET_ADDRESS");
   const slug = process.env.POLYMARKET_MARKET_SLUG || "trump-presidential-election";
   const minWhaleUsd = Number(process.env.POLYSIGNAL_MIN_WHALE_USDC || "25000");
 
@@ -297,8 +298,8 @@ async function main() {
   console.log("Mock account age (days):", payload.accountAgeDays);
 
   const txHash = await walletClient.writeContract({
-    address: getAddress(mockPolymarketAddress),
-    abi: mockPolymarketAbi,
+    address: getAddress(tradeBridgeAddress),
+    abi: tradeBridgeAbi,
     functionName: "logTrade",
     args: [payload],
     chain: somniaTestnet,

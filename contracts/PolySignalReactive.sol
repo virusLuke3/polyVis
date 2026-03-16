@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {MockPolymarket} from "./MockPolymarket.sol";
+import {IPolymarketTradeBridge} from "./interfaces/IPolymarketTradeBridge.sol";
 import {ISomniaEventHandler} from "./interfaces/ISomniaEventHandler.sol";
 import {ISomniaReactivityPrecompile} from "./interfaces/ISomniaReactivityPrecompile.sol";
 import {SomniaEventHandler} from "./vendor/SomniaEventHandler.sol";
@@ -286,7 +286,7 @@ contract PolySignalReactive is SomniaEventHandler {
     }
 
     function _directionLabel(uint8 direction) internal pure returns (string memory) {
-        return direction == uint8(MockPolymarket.TradeDirection.YES) ? "YES" : "NO";
+        return direction == uint8(IPolymarketTradeBridge.TradeDirection.YES) ? "YES" : "NO";
     }
 
     function _topicToAddress(bytes32 topicValue) internal pure returns (address) {

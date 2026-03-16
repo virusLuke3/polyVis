@@ -5,12 +5,16 @@
 ## Current structure
 
 - `contracts/`
-  - `MockPolymarket.sol`: receives bridged Polymarket trades on Somnia.
+  - `PolymarketTradeBridge.sol`: production bridge contract for relayed Polymarket trades on Somnia.
+  - `MockPolymarket.sol`: compatibility wrapper kept for the old contract name.
   - `PolySignalReactive.sol`: subscribes with Somnia native reactivity and emits `AlphaSignal`.
 - `scripts/`
   - `fetchPolymarketData.js`: fetches market metadata from Gamma and real `OrderFilled` trades from Polygon, then saves a local JSON snapshot.
-  - `relayPolymarketTrade.js`: forwards a detected whale trade to `MockPolymarket` on Somnia.
+  - `relayPolymarketTrade.js`: forwards a detected whale trade to `PolymarketTradeBridge` on Somnia.
   - `deploy.js`: deploys both Phase 1 contracts.
+  - `startRealtimeDashboard.js`: runs a live ingestion loop, relays whale trades to Somnia testnet, and serves a dashboard over SSE.
+- `public/`
+  - live dashboard assets served by the Node runtime.
 - `.env` / `.env.example`
   - root-level configuration for Polygon RPC, Somnia RPC, relayer account, market slug, and deployed contract addresses.
 - `polyFake/`
@@ -22,8 +26,8 @@ The relayer only forwards a Polygon trade into Somnia.
 
 The actual signal generation is on-chain:
 
-1. `relayPolymarketTrade.js` sends a normalized trade to `MockPolymarket.logTrade(...)`.
-2. `MockPolymarket` emits `TradeBridged(...)`.
+1. `relayPolymarketTrade.js` or `startRealtimeDashboard.js` sends a normalized trade to `PolymarketTradeBridge.logTrade(...)`.
+2. `PolymarketTradeBridge` emits `TradeBridged(...)`.
 3. Somnia reactivity calls `PolySignalReactive.onEvent(...)`.
 4. `PolySignalReactive` evaluates the trade and emits `AlphaSignal(...)`.
 
@@ -52,8 +56,10 @@ The scripts decode the trade using the same logic as the old `polyFake` implemen
 
 ```bash
 npm install
-npm run fetch:polymarket
+cp .env.example .env
 npm run compile
 npm run deploy:somnia
-npm run relay:trade
+npm start
 ```
+
+Open `http://localhost:3000` after startup to watch the live dashboard.
