@@ -11,6 +11,26 @@ English entry:
 项目以 `Foundry-first` 为主，内置 Clash Verge 代理适配，核心亮点是 Somnia 原生链上响应式流程：
 实时 Polymarket 成交先被中继到 Somnia，Somnia 订阅自动触发响应式合约，最后前端消费链上的 `AlphaSignal` 结果。
 
+## 产品亮点展示
+
+下面是演示了核心功能及 Somnia 原生响应式的关键截图：
+
+**1. 预测市场主看板与全景追踪**  
+![主控看板](./figures/demo1.png)  
+*实时展示追踪市场的全景指标（流动性、成交量、资金倾向），并通过 Web3 钱包网关实现原生门槛鉴权（Premium 访问）。*
+
+**2. Somnia 链上响应式证据链 (Evidence Chain)**  
+![证据链](./figures/demo2.png)  
+*展示端到端的 Reactivity 证明。从 Polygon 提取的交易被投入我们的中继桥，从而在 Somnia 内原生地触发安全且纯链上的订阅及 Alpha 评估。*
+
+**3. 链上 Alpha 信号高级推送源**  
+![高级推送源](./figures/demo3.png)  
+*当 8 种大户和异常行为规则在链上的 `PolySignalReactive` 评估被满足后，会直接释放携带确切买卖方向、赔率与头寸风险的 Alpha 信号。*
+
+**4. 活跃市场的异常监控**  
+![活跃市场监控](./figures/demo4.png)  
+*能够实时观测单一市场的“同一方向连击”、“极端资金面”和“大户入场”等多维指标，让预测市场里的散户不再盲目。*
+
 ## 项目概览
 
 - `contracts/`

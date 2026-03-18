@@ -11,6 +11,26 @@ Chinese entry:
 The project is `Foundry-first`, proxy-aware for Clash Verge, and centered on a Somnia-native reactive flow:
 live Polymarket trades are relayed into Somnia, Somnia subscriptions trigger the reactive contract on-chain, and the dashboard consumes the resulting `AlphaSignal` events.
 
+## Product Highlights
+
+Here are the key aspects of our Somnia Reactivity Demo:
+
+**1. Main Dashboard & Executable Context**  
+![Main Dashboard](./figures/demo1.png)  
+*The main hub displaying continuous real-time trading signals, actionable context, and our pure Web3-native premium wallet integration.*
+
+**2. Somnia Reactivity Evidence Chain**  
+![Evidence Chain](./figures/demo2.png)  
+*Transparent end-to-end proof of reactivity. It tracks the pipeline from Polygon trade ingestion, Bridge relay passing, native subscription detection, to the final reactive evaluation entirely on-chain.*
+
+**3. Premium On-Chain Alpha Feed**  
+![Alpha Signal Feed](./figures/demo3.png)  
+*Visualizing the high-conviction alerts computed directly by the Somnia reactive contract. Trades hitting the 8 anomaly rules are instantly shown to premium audiences.*
+
+**4. Market Tracking & Anomaly Flow**  
+![Tracked Markets](./figures/demo4.png)  
+*The tracking directory flags suspicious Polymarket order flows, assigning anomaly profiles like "Same-side Streak" and "Market Impact Spike" natively via smart contracts.*
+
 ## Overview
 
 - `contracts/`
