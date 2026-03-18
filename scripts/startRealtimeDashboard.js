@@ -26,6 +26,12 @@ const NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 const USDC_DECIMALS = 6;
 const LOG_BLOCK_BATCH = BigInt(process.env.POLYMARKET_LOG_BLOCK_BATCH || "1000");
 const SOMNIA_LOG_BLOCK_BATCH = BigInt(process.env.SOMNIA_LOG_BLOCK_BATCH || "900");
+const MAX_TRADE_LOGS_PER_POLL = Number(process.env.POLYSIGNAL_MAX_TRADE_LOGS_PER_POLL || "400");
+const PROGRESS_PERSIST_EVERY = Number(process.env.POLYSIGNAL_PROGRESS_PERSIST_EVERY || "25");
+const MAX_RAW_LOGS_BUFFER = Number(
+  process.env.POLYSIGNAL_MAX_RAW_LOGS_BUFFER || String(Math.max(MAX_TRADE_LOGS_PER_POLL * 4, 1000))
+);
+const COLD_START_BLOCKS = BigInt(process.env.POLYSIGNAL_COLD_START_BLOCKS || "2");
 const SOMNIA_USE_LEGACY_TX = (process.env.SOMNIA_USE_LEGACY_TX || "true") === "true";
 const SOMNIA_GAS_BUFFER_BPS = BigInt(process.env.SOMNIA_GAS_BUFFER_BPS || "13000");
 const PORT_AUTO_INCREMENT = (process.env.PORT_AUTO_INCREMENT || "true") === "true";
@@ -33,6 +39,8 @@ const PORT_SEARCH_LIMIT = Number(process.env.PORT_SEARCH_LIMIT || "20");
 const RUNTIME_DIR = path.resolve(process.env.POLYSIGNAL_RUNTIME_DIR || "./data/runtime");
 const CURSOR_PATH = path.join(RUNTIME_DIR, "cursor.json");
 const SNAPSHOT_PATH = path.join(RUNTIME_DIR, "dashboard-state.json");
+const MARKETS_CACHE_PATH = path.join(RUNTIME_DIR, "markets-cache.json");
+const MARKETS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const PUBLIC_DIR = path.resolve("./public");
 
 const polymarketOrderFilledAbi = parseAbi([
@@ -229,6 +237,64 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
 
+async function fetchJsonWithRetry(url, options = {}) {
+  const retries = Number(options.retries || 3);
+  const timeoutMs = Number(options.timeoutMs || 15_000);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "PolySignal/0.1",
+          ...(options.headers || {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function restoreSnapshotState() {
+  const snapshot = readJsonIfExists(SNAPSHOT_PATH);
+  if (!snapshot || typeof snapshot !== "object") {
+    return;
+  }
+
+  state.activeMarketSlug = snapshot.activeMarketSlug || state.activeMarketSlug;
+  state.market = snapshot.market || state.market;
+  state.markets = Array.isArray(snapshot.markets) ? snapshot.markets : state.markets;
+  state.lastMarketRefreshAt = snapshot.lastMarketRefreshAt || state.lastMarketRefreshAt;
+  state.latestBlock = snapshot.latestBlock ?? state.latestBlock;
+  state.lastProcessedBlock = snapshot.lastProcessedBlock ?? state.lastProcessedBlock;
+  state.counters = snapshot.counters || state.counters;
+  state.analytics = snapshot.analytics || state.analytics;
+  state.trades = Array.isArray(snapshot.trades) ? snapshot.trades : state.trades;
+  state.alphaSignals = Array.isArray(snapshot.alphaSignals) ? snapshot.alphaSignals : state.alphaSignals;
+  state.events = Array.isArray(snapshot.events) ? snapshot.events : state.events;
+  state.errors = [];
+}
+
 function normalizeRelayError(error) {
   const message = error instanceof Error ? error.message : String(error);
   const duplicate =
@@ -290,6 +356,9 @@ function shortAddress(address) {
 }
 
 function extractEventSlug(market) {
+  if (typeof market?.eventSlug === "string" && market.eventSlug.trim()) {
+    return market.eventSlug;
+  }
   const events = Array.isArray(market?.events) ? market.events : [];
   const candidate = events.find((event) => event && typeof event.slug === "string" && event.slug.trim());
   return candidate?.slug || "";
@@ -321,6 +390,35 @@ function buildMarketSummary(context) {
     lastAlphaAt: null,
     lastAnomalies: [],
     latestThesis: "",
+  };
+}
+
+function normalizeMarketPayload(market) {
+  if (!market || !market.conditionId) {
+    return null;
+  }
+
+  const tokens = Array.isArray(market.tokens)
+    ? market.tokens
+        .filter(Boolean)
+        .slice(0, 4)
+        .map((token) => ({
+          outcome: token.outcome,
+          token_id: token.token_id,
+          price: token.price,
+        }))
+    : [];
+
+  return {
+    slug: market.slug || "",
+    eventSlug: extractEventSlug(market) || market.slug || "",
+    question: market.question || "",
+    conditionId: String(market.conditionId),
+    volume: Number(market.volume || 0),
+    liquidity: Number(market.liquidity || 0),
+    clobTokenIds: market.clobTokenIds || [],
+    outcomePrices: market.outcomePrices || [],
+    tokens,
   };
 }
 
@@ -376,13 +474,8 @@ function updateMarketSummary(slug, updater) {
 }
 
 async function fetchMarketBySlug(slug) {
-  const response = await fetch(`${GAMMA_API_BASE}/markets?slug=${encodeURIComponent(slug)}`);
-  if (!response.ok) {
-    throw new Error(`Gamma market lookup failed with status ${response.status}`);
-  }
-
-  const data = await response.json();
-  const market = Array.isArray(data) ? data[0] : data;
+  const data = await fetchJsonWithRetry(`${GAMMA_API_BASE}/markets?slug=${encodeURIComponent(slug)}`);
+  const market = normalizeMarketPayload(Array.isArray(data) ? data[0] : data);
   if (!market || !market.conditionId) {
     throw new Error(`No market found for slug "${slug}"`);
   }
@@ -390,32 +483,39 @@ async function fetchMarketBySlug(slug) {
 }
 
 async function fetchActiveMarkets() {
+  // Return cached markets if still fresh
+  const cached = readJsonIfExists(MARKETS_CACHE_PATH);
+  if (cached?.markets && Date.now() - (cached.savedAt || 0) < MARKETS_CACHE_TTL_MS) {
+    return cached.markets;
+  }
+
   const allMarkets = [];
   const pageSize = Math.max(1, state.config.activeMarketsPageSize);
   const maxMarkets = Math.max(pageSize, state.config.activeMarketsLimit);
 
   for (let offset = 0; offset < maxMarkets; offset += pageSize) {
-    const response = await fetch(
-      `${GAMMA_API_BASE}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}`
+    const data = await fetchJsonWithRetry(
+      `${GAMMA_API_BASE}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}&order=volume&ascending=false`
     );
-
-    if (!response.ok) {
-      throw new Error(`Gamma active markets lookup failed with status ${response.status} at offset ${offset}`);
-    }
-
-    const data = await response.json();
     const markets = Array.isArray(data) ? data : [];
     if (markets.length === 0) {
       break;
     }
 
-    allMarkets.push(...markets);
+    for (const market of markets) {
+      const normalized = normalizeMarketPayload(market);
+      if (normalized) {
+        allMarkets.push(normalized);
+      }
+    }
     if (markets.length < pageSize) {
       break;
     }
   }
 
-  return allMarkets.slice(0, maxMarkets);
+  const result = allMarkets.sort((a, b) => b.volume - a.volume).slice(0, maxMarkets);
+  writeJson(MARKETS_CACHE_PATH, { savedAt: Date.now(), markets: result });
+  return result;
 }
 
 function extractTokenIds(market) {
@@ -468,7 +568,13 @@ function mockAccountAgeDays(trader) {
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
 
-  return allowlist.includes(trader.toLowerCase()) ? 1 : 45;
+  if (allowlist.includes(trader.toLowerCase())) {
+    return 1;
+  }
+  // Derive a pseudo-random age from the trader address so different wallets
+  // get different ages, making detection more realistic.
+  const seed = parseInt(trader.slice(-4), 16) % 365;
+  return seed + 1;
 }
 
 function computeTraderPositionUsd(trade) {
@@ -738,7 +844,9 @@ async function pollAlphaSignals(cursor) {
       toBlock: endBlock,
     });
 
-    logs.push(...chunkLogs);
+    for (const log of chunkLogs) {
+      logs.push(log);
+    }
     startBlock = endBlock + 1n;
   }
 
@@ -815,16 +923,17 @@ async function getLogsForRange(fromBlock, toBlock) {
     ],
   };
 
-  async function getLogsInChunks(address) {
-    const logs = [];
-    let startBlock = fromBlock;
+  const logs = [];
+  let startBlock = fromBlock;
+  const addresses = [CTF_EXCHANGE_ADDRESS, NEG_RISK_EXCHANGE_ADDRESS];
 
-    while (startBlock <= toBlock) {
-      const endBlock =
-        startBlock + LOG_BLOCK_BATCH - 1n < toBlock
-          ? startBlock + LOG_BLOCK_BATCH - 1n
-          : toBlock;
+  while (startBlock <= toBlock) {
+    const endBlock =
+      startBlock + LOG_BLOCK_BATCH - 1n < toBlock
+        ? startBlock + LOG_BLOCK_BATCH - 1n
+        : toBlock;
 
+    for (const address of addresses) {
       const chunkLogs = await polygonClient.getLogs({
         address,
         event: eventDefinition,
@@ -832,19 +941,19 @@ async function getLogsForRange(fromBlock, toBlock) {
         toBlock: endBlock,
       });
 
-      logs.push(...chunkLogs);
-      startBlock = endBlock + 1n;
+      for (const log of chunkLogs) {
+        logs.push(log);
+      }
+
+      if (logs.length > MAX_RAW_LOGS_BUFFER) {
+        logs.splice(0, logs.length - MAX_RAW_LOGS_BUFFER);
+      }
     }
 
-    return logs;
+    startBlock = endBlock + 1n;
   }
 
-  const [binaryLogs, negRiskLogs] = await Promise.all([
-    getLogsInChunks(CTF_EXCHANGE_ADDRESS),
-    getLogsInChunks(NEG_RISK_EXCHANGE_ADDRESS),
-  ]);
-
-  return [...binaryLogs, ...negRiskLogs];
+  return logs;
 }
 
 async function initializeMarketContexts() {
@@ -864,7 +973,7 @@ async function initializeMarketContexts() {
 
   marketContexts.clear();
   tokenMarketIndex.clear();
-  state.markets = [];
+  const nextMarketSummaries = [];
 
   for (const market of uniqueMarkets.values()) {
     const tokenIds = extractTokenIds(market);
@@ -879,8 +988,12 @@ async function initializeMarketContexts() {
     marketContexts.set(marketKey, context);
     tokenMarketIndex.set(tokenIds.yesTokenId.toString(), { market, direction: 0, polymarketUrl: context.polymarketUrl });
     tokenMarketIndex.set(tokenIds.noTokenId.toString(), { market, direction: 1, polymarketUrl: context.polymarketUrl });
-    upsertMarketSummary(buildMarketSummary(context));
+    nextMarketSummaries.push(buildMarketSummary(context));
   }
+
+  state.markets = nextMarketSummaries;
+  sortMarketSummaries();
+  syncPrimaryMarket();
 
   if (
     !previousActiveMarketSlug ||
@@ -907,13 +1020,15 @@ async function ensureMarketContexts() {
 
   try {
     await initializeMarketContexts();
-    for (const market of state.markets) {
-      pushEvent("market", {
+    pushEvent("market-sync", {
+      totalMarkets: state.markets.length,
+      activeMarketSlug: state.activeMarketSlug,
+      sampleMarkets: state.markets.slice(0, 5).map((market) => ({
         slug: market.slug,
         question: market.question,
         polymarketUrl: market.polymarketUrl,
-      });
-    }
+      })),
+    });
     return true;
   } catch (error) {
     recordError(new Error(`Unable to initialize market metadata: ${error.message}`));
@@ -936,12 +1051,14 @@ async function pollOnce(cursor) {
 
     const latestBlock = await polygonClient.getBlockNumber();
     state.latestBlock = Number(latestBlock);
+    persistState();
 
     const configuredBackfill = BigInt(process.env.POLYSIGNAL_START_BLOCKS_BACK || "250");
+    const coldStartBackfill = configuredBackfill < COLD_START_BLOCKS ? configuredBackfill : COLD_START_BLOCKS;
     const fromBlock = cursor.lastProcessedBlock
       ? cursor.lastProcessedBlock + 1n
-      : latestBlock > configuredBackfill
-        ? latestBlock - configuredBackfill
+      : latestBlock > coldStartBackfill
+        ? latestBlock - coldStartBackfill
         : 0n;
 
     if (fromBlock > latestBlock) {
@@ -951,12 +1068,27 @@ async function pollOnce(cursor) {
     }
 
     const logs = await getLogsForRange(fromBlock, latestBlock);
-    const trades = logs
+    const allTrades = logs
       .map(decodePolymarketTrade)
       .filter(Boolean)
       .sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber - b.blockNumber));
 
-    for (const trade of trades) {
+    let trades = allTrades;
+    if (allTrades.length > MAX_TRADE_LOGS_PER_POLL) {
+      trades = allTrades.slice(-MAX_TRADE_LOGS_PER_POLL);
+      pushEvent("backfill-trimmed", {
+        fromBlock: fromBlock.toString(),
+        toBlock: latestBlock.toString(),
+        totalLogs: allTrades.length,
+        processedLogs: trades.length,
+        note: "Processing only the most recent trade logs in this cycle to keep the dashboard responsive.",
+      });
+    }
+
+    state.counters.tradesSeen += trades.length;
+
+    for (let index = 0; index < trades.length; index += 1) {
+      const trade = trades[index];
       const tradeKey = `${trade.txHash}-${trade.logIndex}`;
       if (cursor.seenTradeIds.has(tradeKey)) {
         continue;
@@ -969,8 +1101,8 @@ async function pollOnce(cursor) {
         state.counters.signalsProjected += 1;
       }
 
-      let relayResult = { skipped: true, reason: "Trade did not clear anomaly relay threshold." };
-      if (formatUsd6(trade.amount) >= state.config.minWhaleUsd || payload.anomalyFlags !== 0) {
+      let relayResult = { skipped: true, reason: "Trade stayed below live relay threshold." };
+      if (formatUsd6(trade.amount) >= state.config.minWhaleUsd || signalProjection.shouldEmit) {
         try {
           relayResult = await relayTrade(payload);
         } catch (error) {
@@ -1031,6 +1163,12 @@ async function pollOnce(cursor) {
           relayTxHash: enrichedTrade.relayTxHash,
         });
       }
+
+      if ((index + 1) % PROGRESS_PERSIST_EVERY === 0) {
+        state.status = "catching-up";
+        state.lastProcessedBlock = Number(trade.blockNumber || latestBlock);
+        persistState();
+      }
     }
 
     cursor.lastProcessedBlock = latestBlock;
@@ -1084,6 +1222,15 @@ function createHttpServer() {
 
     if (url.pathname === "/styles.css") {
       serveFile(response, path.join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8");
+      return;
+    }
+
+    if (url.pathname === "/vendor/ethers.js") {
+      serveFile(
+        response,
+        path.join(process.cwd(), "node_modules", "ethers", "dist", "ethers.umd.min.js"),
+        "application/javascript; charset=utf-8"
+      );
       return;
     }
 
@@ -1150,6 +1297,7 @@ async function startHttpServer() {
 
 async function start() {
   ensureRuntimeDir();
+  restoreSnapshotState();
   await startHttpServer();
 
   state.status = "initializing";

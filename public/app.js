@@ -21,11 +21,17 @@ const tickerAlphaEl = document.getElementById("ticker-alpha");
 const tickerVolumeEl = document.getElementById("ticker-volume");
 const heroThesisEl = document.getElementById("hero-thesis");
 const alphaHeaderChipEl = document.getElementById("alpha-header-chip");
+const walletModalEl = document.getElementById("wallet-modal");
+const walletProviderListEl = document.getElementById("wallet-provider-list");
+const walletModalHintEl = document.getElementById("wallet-modal-hint");
+const walletModalCopyEl = document.getElementById("wallet-modal-copy");
+const walletCloseButtonEl = document.getElementById("wallet-close-button");
 
 let currentState = null;
 let selectedMarketSlug = null;
 let marketSearchQuery = "";
 let marketPage = 1;
+let selectedWalletProviderId = null;
 const MARKET_COLUMNS = 4;
 const MARKET_ROWS = 5;
 const MARKETS_PER_PAGE = MARKET_COLUMNS * MARKET_ROWS;
@@ -69,6 +75,7 @@ const VERIFIED_ONCHAIN_ALPHA_SAMPLE = {
 const walletState = {
   address: null,
   displayAddress: "NOT CONNECTED",
+  providerName: "",
   hasAccess: false,
   expiresAt: 0,
   priceWei: 0n,
@@ -76,9 +83,193 @@ const walletState = {
   busy: false,
   error: "",
 };
+const WALLET_REQUEST_TIMEOUT_MS = 30_000;
+
+function getFallbackState() {
+  return {
+    config: {
+      somniaChainId: 50312,
+      somniaRpcUrl: "https://dream-rpc.somnia.network",
+      accessPassAddress: ZERO_ADDRESS,
+      premiumPriceWei: "0",
+      accessDurationDays: 30,
+    },
+  };
+}
 
 function getEthers() {
   return window.ethers || null;
+}
+
+function buildWalletProviderId(provider, fallbackIndex = 0) {
+  const rdns = provider?.info?.rdns || provider?.providerInfo?.rdns || "";
+  const uuid = provider?.info?.uuid || provider?.providerInfo?.uuid || "";
+  const name = getProviderName(provider);
+  return [rdns, uuid, name, fallbackIndex].filter(Boolean).join(":");
+}
+
+function getInjectedProviders() {
+  if (!window.ethereum) {
+    return [];
+  }
+
+  if (Array.isArray(window.ethereum.providers) && window.ethereum.providers.length > 0) {
+    return window.ethereum.providers.filter(Boolean).map((provider, index) => ({
+      id: buildWalletProviderId(provider, index),
+      name: getProviderName(provider),
+      provider,
+      source: "window.ethereum.providers",
+    }));
+  }
+
+  return [
+    {
+      id: buildWalletProviderId(window.ethereum, 0),
+      name: getProviderName(window.ethereum),
+      provider: window.ethereum,
+      source: "window.ethereum",
+    },
+  ];
+}
+
+function getProviderName(provider) {
+  if (!provider) {
+    return "Unknown Wallet";
+  }
+
+  if (provider.isMetaMask && !provider.isOkxWallet && !provider.isOKExWallet) {
+    return "MetaMask";
+  }
+  if (provider.isOkxWallet || provider.isOKExWallet) {
+    return "OKX Wallet";
+  }
+  if (provider.isCoinbaseWallet) {
+    return "Coinbase Wallet";
+  }
+  if (provider.isBraveWallet) {
+    return "Brave Wallet";
+  }
+  if (provider.providerInfo?.name) {
+    return provider.providerInfo.name;
+  }
+
+  return "Injected Wallet";
+}
+
+function getWalletProvider() {
+  const providers = getAvailableWalletProviders();
+  if (!providers.length) {
+    return null;
+  }
+
+  const selectedProvider = selectedWalletProviderId
+    ? providers.find((entry) => entry.id === selectedWalletProviderId)
+    : null;
+  if (selectedProvider) {
+    return selectedProvider.provider;
+  }
+
+  const metaMaskProvider = providers.find(
+    (entry) =>
+      entry.provider?.isMetaMask &&
+      !entry.provider?.isOkxWallet &&
+      !entry.provider?.isOKExWallet &&
+      /metamask/i.test(entry.name)
+  );
+  if (metaMaskProvider) {
+    return metaMaskProvider.provider;
+  }
+
+  return providers[0].provider;
+}
+
+function getAvailableWalletProviders() {
+  const deduped = new Map();
+
+  for (const entry of getInjectedProviders()) {
+    if (!deduped.has(entry.id)) {
+      deduped.set(entry.id, entry);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+function hasMetaMaskProvider() {
+  return getAvailableWalletProviders().some(
+    (entry) =>
+      entry.provider?.isMetaMask &&
+      !entry.provider?.isOkxWallet &&
+      !entry.provider?.isOKExWallet &&
+      /metamask/i.test(entry.name)
+  );
+}
+
+function openWalletModal() {
+  if (!walletModalEl || !walletProviderListEl || !walletModalHintEl || !walletModalCopyEl) {
+    return;
+  }
+
+  const providers = getAvailableWalletProviders();
+  walletProviderListEl.innerHTML = providers.length
+    ? providers
+        .map((entry) => {
+          const isPreferred = /metamask/i.test(entry.name);
+          return `
+            <button class="wallet-provider-option ${isPreferred ? "is-preferred" : ""}" data-wallet-provider="${entry.id}">
+              <span class="wallet-provider-label">
+                <span class="wallet-provider-name">${entry.name}</span>
+                <span class="wallet-provider-meta">${entry.source}</span>
+              </span>
+              <span class="wallet-provider-pill">${isPreferred ? "Preferred" : "Injected"}</span>
+            </button>
+          `;
+        })
+        .join("")
+    : '<p class="empty-state">No injected wallet provider was detected in this browser tab.</p>';
+
+  walletModalCopyEl.textContent = hasMetaMaskProvider()
+    ? "MetaMask was detected. Select it explicitly to prevent another wallet from hijacking this dApp request."
+    : "MetaMask was not detected in the injected provider list for this tab. If you need MetaMask, enable it for localhost or temporarily disable default wallet takeover in other extensions.";
+  walletModalHintEl.textContent = hasMetaMaskProvider()
+    ? "If OKX keeps opening first, choose MetaMask here before pressing Connect."
+    : "Right now this tab is not exposing a MetaMask provider to the page.";
+  walletModalEl.classList.remove("is-hidden");
+  walletModalEl.setAttribute("aria-hidden", "false");
+}
+
+function closeWalletModal() {
+  if (!walletModalEl) {
+    return;
+  }
+
+  walletModalEl.classList.add("is-hidden");
+  walletModalEl.setAttribute("aria-hidden", "true");
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
+function normalizeWalletError(error) {
+  const code = error?.code;
+  if (code === 4001) {
+    return "Wallet connection request was cancelled.";
+  }
+  if (code === -32002) {
+    return "MetaMask already has a pending request. Open the wallet popup and complete or cancel it first.";
+  }
+  return error?.message || String(error);
 }
 
 function formatUsd(value) {
@@ -154,6 +345,10 @@ function accessPassConfigured(state) {
   return Boolean(state?.config?.accessPassAddress) && !isZeroAddress(state.config.accessPassAddress);
 }
 
+function isSomniaChainSelected(state) {
+  return Number(walletState.chainId || 0) === Number(state?.config?.somniaChainId || 50312);
+}
+
 function formatExpiry(timestampSeconds) {
   if (!timestampSeconds) {
     return "inactive";
@@ -180,13 +375,14 @@ function getSomniaChainParams(state) {
 }
 
 async function ensureSomniaWalletNetwork(state) {
-  if (!window.ethereum) {
+  const walletProvider = getWalletProvider();
+  if (!walletProvider) {
     throw new Error("No injected wallet found.");
   }
 
   const params = getSomniaChainParams(state);
   try {
-    await window.ethereum.request({
+    await walletProvider.request({
       method: "wallet_switchEthereumChain",
       params: [{ chainId: params.chainIdHex }],
     });
@@ -195,7 +391,7 @@ async function ensureSomniaWalletNetwork(state) {
       throw error;
     }
 
-    await window.ethereum.request({
+    await walletProvider.request({
       method: "wallet_addEthereumChain",
       params: [params],
     });
@@ -203,10 +399,15 @@ async function ensureSomniaWalletNetwork(state) {
 }
 
 async function refreshWalletAccess(state) {
-  if (!window.ethereum || !walletState.address || !accessPassConfigured(state)) {
+  const walletProvider = getWalletProvider();
+  if (!walletProvider || !walletState.address || !accessPassConfigured(state) || !isSomniaChainSelected(state)) {
     walletState.hasAccess = false;
     walletState.expiresAt = 0;
-    walletState.error = "";
+    if (!walletState.busy && !isSomniaChainSelected(state) && walletState.address) {
+      walletState.error = "Connected wallet is not on Somnia Testnet yet.";
+    } else if (!walletState.busy) {
+      walletState.error = "";
+    }
     return;
   }
 
@@ -216,7 +417,7 @@ async function refreshWalletAccess(state) {
     return;
   }
 
-  const provider = new ethers.BrowserProvider(window.ethereum);
+  const provider = new ethers.BrowserProvider(walletProvider, "any");
   const contract = new ethers.Contract(state.config.accessPassAddress, ACCESS_PASS_ABI, provider);
   const [hasAccess, expiresAt, priceWei] = await Promise.all([
     contract.hasAccess(walletState.address),
@@ -231,43 +432,72 @@ async function refreshWalletAccess(state) {
 }
 
 async function connectWallet() {
-  if (!currentState) {
+  if (walletState.busy) {
     return;
   }
 
-  if (!window.ethereum) {
+  const walletProvider = getWalletProvider();
+  if (!walletProvider) {
     walletState.error = "Install MetaMask or another injected wallet.";
-    renderState(currentState);
+    if (currentState) {
+      renderState(currentState);
+    }
     return;
   }
 
   const ethers = getEthers();
   if (!ethers) {
     walletState.error = "ethers browser runtime failed to load.";
-    renderState(currentState);
+    if (currentState) {
+      renderState(currentState);
+    }
     return;
   }
 
+  const effectiveState = currentState || getFallbackState();
   walletState.busy = true;
-  renderState(currentState);
+  walletState.error = "";
+  if (currentState) {
+    renderState(currentState);
+  } else {
+    renderWalletUi(effectiveState);
+  }
 
   try {
-    await window.ethereum.request({ method: "eth_requestAccounts" });
-    await ensureSomniaWalletNetwork(currentState);
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    const signer = await provider.getSigner();
-    const network = await provider.getNetwork();
-    const address = await signer.getAddress();
+    const accounts = await withTimeout(
+      walletProvider.request({ method: "eth_requestAccounts" }),
+      WALLET_REQUEST_TIMEOUT_MS,
+      "Wallet request timed out. Reopen MetaMask and try again."
+    );
+    const chainIdHex = await withTimeout(
+      walletProvider.request({ method: "eth_chainId" }),
+      10_000,
+      "Unable to read the connected wallet network."
+    );
+    const address = Array.isArray(accounts) ? accounts[0] : null;
+    if (!address) {
+      throw new Error("No wallet address was returned.");
+    }
 
     walletState.address = address;
     walletState.displayAddress = shortAddress(address);
-    walletState.chainId = Number(network.chainId);
-    await refreshWalletAccess(currentState);
+    walletState.providerName = getProviderName(walletProvider);
+    walletState.chainId = Number.parseInt(chainIdHex, 16);
+    walletState.hasAccess = false;
+    walletState.expiresAt = 0;
+
+    if (accessPassConfigured(effectiveState) && isSomniaChainSelected(effectiveState)) {
+      await refreshWalletAccess(effectiveState);
+    }
   } catch (error) {
-    walletState.error = error?.message || String(error);
+    walletState.error = normalizeWalletError(error);
   } finally {
     walletState.busy = false;
-    renderState(currentState);
+    if (currentState) {
+      renderState(currentState);
+    } else {
+      renderWalletUi(effectiveState);
+    }
   }
 }
 
@@ -289,20 +519,24 @@ async function unlockPremium() {
     return;
   }
 
+  const walletProvider = getWalletProvider();
   const ethers = getEthers();
-  if (!ethers || !window.ethereum) {
+  if (!ethers || !walletProvider) {
     walletState.error = "Wallet runtime unavailable.";
     renderState(currentState);
     return;
   }
 
   walletState.busy = true;
+  walletState.error = "";
   renderState(currentState);
 
   try {
     await ensureSomniaWalletNetwork(currentState);
-    const provider = new ethers.BrowserProvider(window.ethereum);
+    const provider = new ethers.BrowserProvider(walletProvider, "any");
     const signer = await provider.getSigner();
+    const network = await provider.getNetwork();
+    walletState.chainId = Number(network.chainId);
     const contract = new ethers.Contract(currentState.config.accessPassAddress, ACCESS_PASS_ABI, signer);
     const priceWei =
       walletState.priceWei && walletState.priceWei > 0n
@@ -311,9 +545,11 @@ async function unlockPremium() {
 
     const tx = await contract.purchaseAccess({ value: priceWei });
     await tx.wait();
+    // Optimistically mark access as granted before contract re-check
+    walletState.hasAccess = true;
     await refreshWalletAccess(currentState);
   } catch (error) {
-    walletState.error = error?.message || String(error);
+    walletState.error = normalizeWalletError(error);
   } finally {
     walletState.busy = false;
     renderState(currentState);
@@ -339,9 +575,18 @@ function renderWalletUi(state) {
     ? "PROCESSING..."
     : walletState.address
       ? walletState.displayAddress
-      : "CONNECT WALLET";
+      : hasMetaMaskProvider()
+        ? "CONNECT METAMASK"
+        : "CONNECT WALLET";
   connectWalletButtonEl.disabled = walletState.busy;
   connectWalletButtonEl.classList.toggle("is-connected", Boolean(walletState.address));
+  connectWalletButtonEl.title = [
+    walletState.providerName,
+    hasMetaMaskProvider() ? "" : "MetaMask provider not detected in this tab",
+    walletState.error,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function normalizeMarkets(state) {
@@ -414,6 +659,8 @@ function renderMarketDirectory(state, selectedMarket) {
     ? visibleMarkets
         .map((market) => {
           const tone = toneForMarket(market);
+          const displayedVolume = Number(market.trackedVolumeUsd || 0) > 0 ? Number(market.trackedVolumeUsd || 0) : Number(market.volume || 0);
+          const displayedVolumeLabel = Number(market.trackedVolumeUsd || 0) > 0 ? "Tracked" : "Market Vol";
           const latestAnomalies = (market.lastAnomalies || [])
             .slice(0, 3)
             .map((label) => `<span class="signal-chip">${label}</span>`)
@@ -442,8 +689,8 @@ function renderMarketDirectory(state, selectedMarket) {
                   <span class="market-stat-label">Alpha</span>
                 </div>
                 <div class="market-stat">
-                  <span class="market-stat-value">${formatUsd(market.trackedVolumeUsd || 0)}</span>
-                  <span class="market-stat-label">Tracked</span>
+                  <span class="market-stat-value">${formatUsd(displayedVolume)}</span>
+                  <span class="market-stat-label">${displayedVolumeLabel}</span>
                 </div>
               </div>
 
@@ -649,20 +896,8 @@ function renderReactivityEvidence(state, selectedMarket) {
 }
 
 function renderTrades(state, selectedMarket) {
-  const marketTrades = filterByMarket(state.trades, selectedMarket?.slug).filter(
-    (trade) =>
-      (trade.signalProjection && trade.signalProjection.shouldEmit) ||
-      (trade.anomalyLabels && trade.anomalyLabels.length > 0) ||
-      trade.relayTxHash
-  );
-  const trades = marketTrades.length
-    ? marketTrades
-    : (state.trades || []).filter(
-        (trade) =>
-          (trade.signalProjection && trade.signalProjection.shouldEmit) ||
-          (trade.anomalyLabels && trade.anomalyLabels.length > 0) ||
-          trade.relayTxHash
-      );
+  const marketTrades = filterByMarket(state.trades, selectedMarket?.slug);
+  const trades = marketTrades.length ? marketTrades : (state.trades || []);
 
   tradesEl.innerHTML = trades.length
     ? trades
@@ -749,14 +984,16 @@ function renderAlphaSignals(state, selectedMarket) {
 
         <div class="premium-actions">
           <button class="terminal-button terminal-button-orange premium-action-button" data-premium-action="unlock" ${
-            walletState.busy || !accessPassConfigured(state) ? "disabled" : ""
+            walletState.busy || !accessPassConfigured(state) || walletState.hasAccess ? "disabled" : ""
           }>
             ${
               !accessPassConfigured(state)
                 ? "ACCESS PASS NOT DEPLOYED"
-                : walletState.address
-                  ? "UNLOCK PREMIUM"
-                  : "CONNECT + UNLOCK"
+                : walletState.hasAccess
+                  ? "UNLOCKED"
+                  : walletState.address
+                    ? "UNLOCK PREMIUM"
+                    : "CONNECT + UNLOCK"
             }
           </button>
           ${
@@ -953,6 +1190,27 @@ function renderState(state) {
 }
 
 document.addEventListener("click", (event) => {
+  const walletCloseTarget = event.target.closest("[data-wallet-close]");
+  if (walletCloseTarget) {
+    closeWalletModal();
+    return;
+  }
+
+  const walletProviderButton = event.target.closest("[data-wallet-provider]");
+  if (walletProviderButton) {
+    selectedWalletProviderId = walletProviderButton.getAttribute("data-wallet-provider");
+    const selected = getAvailableWalletProviders().find((entry) => entry.id === selectedWalletProviderId);
+    walletState.providerName = selected?.name || "";
+    walletState.error = selected?.name ? `Selected ${selected.name}. Click Connect to continue.` : walletState.error;
+    closeWalletModal();
+    if (currentState) {
+      renderState(currentState);
+    } else {
+      renderWalletUi(getFallbackState());
+    }
+    return;
+  }
+
   const premiumButton = event.target.closest("[data-premium-action]");
   if (premiumButton) {
     void unlockPremium();
@@ -984,7 +1242,16 @@ document.addEventListener("click", (event) => {
 });
 
 connectWalletButtonEl?.addEventListener("click", () => {
+  const providers = getAvailableWalletProviders();
+  if (providers.length > 1 && !selectedWalletProviderId) {
+    openWalletModal();
+    return;
+  }
   void connectWallet();
+});
+
+walletCloseButtonEl?.addEventListener("click", () => {
+  closeWalletModal();
 });
 
 marketSearchEl?.addEventListener("input", (event) => {
@@ -999,8 +1266,16 @@ async function boot() {
   const response = await fetch("/api/state");
   const initialState = await response.json();
 
-  if (window.ethereum) {
-    const accounts = await window.ethereum.request({ method: "eth_accounts" });
+  const walletProvider = getWalletProvider();
+  if (walletProvider) {
+    const matchedProvider = getAvailableWalletProviders().find((entry) => entry.provider === walletProvider);
+    if (matchedProvider) {
+      selectedWalletProviderId = matchedProvider.id;
+    }
+    const accounts = await walletProvider.request({ method: "eth_accounts" });
+    const chainIdHex = await walletProvider.request({ method: "eth_chainId" });
+    walletState.providerName = getProviderName(walletProvider);
+    walletState.chainId = Number.parseInt(chainIdHex, 16);
     if (Array.isArray(accounts) && accounts[0]) {
       walletState.address = accounts[0];
       walletState.displayAddress = shortAddress(accounts[0]);
@@ -1011,11 +1286,12 @@ async function boot() {
       }
     }
 
-    window.ethereum.on?.("accountsChanged", async (accountsChanged) => {
+    walletProvider.on?.("accountsChanged", async (accountsChanged) => {
       walletState.address = accountsChanged?.[0] || null;
       walletState.displayAddress = shortAddress(walletState.address);
       walletState.hasAccess = false;
       walletState.expiresAt = 0;
+      walletState.error = "";
       if (walletState.address && currentState) {
         try {
           await refreshWalletAccess(currentState);
@@ -1028,7 +1304,10 @@ async function boot() {
       }
     });
 
-    window.ethereum.on?.("chainChanged", () => {
+    walletProvider.on?.("chainChanged", () => {
+      try {
+        walletState.chainId = Number.parseInt(walletProvider.chainId || "0x0", 16);
+      } catch {}
       if (currentState) {
         void refreshWalletAccess(currentState)
           .catch((error) => {

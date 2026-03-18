@@ -170,7 +170,27 @@
       </section>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.5/dist/ethers.umd.min.js"></script>
+    <div class="wallet-modal is-hidden" id="wallet-modal" aria-hidden="true">
+      <div class="wallet-modal-backdrop" data-wallet-close="true"></div>
+      <div class="wallet-modal-card">
+        <div class="wallet-modal-header">
+          <div>
+            <p class="micro-label">Wallet Routing</p>
+            <h3>Select Wallet Provider</h3>
+          </div>
+          <button class="terminal-button terminal-button-ghost wallet-close-button" id="wallet-close-button">
+            Close
+          </button>
+        </div>
+        <p class="wallet-modal-copy" id="wallet-modal-copy">
+          Choose which injected wallet should handle this dApp session.
+        </p>
+        <div class="wallet-provider-list" id="wallet-provider-list"></div>
+        <p class="wallet-modal-hint" id="wallet-modal-hint"></p>
+      </div>
+    </div>
+
+    <script src="/vendor/ethers.js"></script>
     <script src="/app.js"></script>
   </body>
   </html>

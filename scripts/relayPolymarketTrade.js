@@ -237,7 +237,9 @@ async function getLogsInChunks(address, fromBlock, toBlock) {
       toBlock: endBlock,
     });
 
-    logs.push(...chunkLogs);
+    for (const log of chunkLogs) {
+      logs.push(log);
+    }
     startBlock = endBlock + 1n;
   }
 

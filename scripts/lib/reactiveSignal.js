@@ -72,34 +72,34 @@ function buildNoSignalExplanation(payload, matchedFlags, finalRiskScoreBps) {
 function evaluateReactiveSignal(payload) {
   let matchedFlags = 0;
 
-  if (payload.amount >= 25_000e6 && payload.accountAgeDays <= 7) {
+  if (payload.amount >= 1_000e6 && payload.accountAgeDays <= 30) {
     matchedFlags |= FLAG_NEW_WALLET_WHALE;
   }
-  if (payload.oddsBps >= 6_000 && payload.amount >= 12_500e6) {
+  if (payload.oddsBps >= 5_500 && payload.amount >= 500e6) {
     matchedFlags |= FLAG_HIGH_CONVICTION_ENTRY;
   }
-  if (payload.recentTradeCount >= 3 && payload.totalPositionUsd >= 40_000e6) {
+  if (payload.recentTradeCount >= 2 && payload.totalPositionUsd >= 2_000e6) {
     matchedFlags |= FLAG_RAPID_ACCUMULATION;
   }
-  if (payload.sameSideStreak >= 3) {
+  if (payload.sameSideStreak >= 2) {
     matchedFlags |= FLAG_SAME_SIDE_STREAK;
   }
-  if (payload.counterpartyConcentrationBps >= 6_500) {
+  if (payload.recentTradeCount >= 2 && payload.counterpartyConcentrationBps >= 5_000) {
     matchedFlags |= FLAG_COUNTERPARTY_CONCENTRATION;
   }
-  if (payload.marketImpactBps >= 450) {
+  if (payload.marketImpactBps >= 100) {
     matchedFlags |= FLAG_MARKET_IMPACT_SPIKE;
   }
-  if (payload.washClusterScoreBps >= 6_000) {
+  if (payload.washClusterScoreBps >= 3_000) {
     matchedFlags |= FLAG_WASH_CLUSTER;
   }
-  if (payload.smartMoneyScoreBps >= 7_000) {
+  if (payload.smartMoneyScoreBps >= 5_000) {
     matchedFlags |= FLAG_SMART_MONEY_FOLLOWTHROUGH;
   }
 
   const derivedRiskScoreBps = deriveRiskScore(matchedFlags);
   const finalRiskScoreBps = Math.max(payload.riskScoreBps || 0, derivedRiskScoreBps);
-  const shouldEmit = matchedFlags !== 0 && finalRiskScoreBps >= 3_000;
+  const shouldEmit = matchedFlags !== 0 && finalRiskScoreBps >= 1_000;
   const analysisCode = shouldEmit ? pickPrimarySignal(matchedFlags) : 0;
 
   return {
