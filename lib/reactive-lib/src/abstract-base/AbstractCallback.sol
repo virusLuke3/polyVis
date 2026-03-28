@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity >=0.8.0;
+
+import "../interfaces/IPayable.sol";
+import "./AbstractPayer.sol";
+
+abstract contract AbstractCallback is AbstractPayer {
+    address internal rvm_id;
+
+    constructor(address _callback_sender) {
+        rvm_id = msg.sender;
+        vendor = IPayable(payable(_callback_sender));
+        addAuthorizedSender(_callback_sender);
+    }
+
+    modifier rvmIdOnly(address _rvmId) {
+        require(rvm_id == _rvmId, "Authorized RVM ID only");
+        _;
+    }
+}

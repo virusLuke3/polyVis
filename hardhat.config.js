@@ -6,6 +6,10 @@ const {
   SOMNIA_RPC_URL,
   SOMNIA_CHAIN_ID,
   POLYGON_RPC_URL,
+  SEPOLIA_RPC_URL,
+  SEPOLIA_CHAIN_ID,
+  REACTIVE_RPC_URL,
+  REACTIVE_CHAIN_ID,
 } = process.env;
 
 const normalizedPrivateKey =
@@ -38,6 +42,16 @@ module.exports = {
     polygon: {
       url: POLYGON_RPC_URL || "https://polygon-rpc.com",
       chainId: 137,
+      accounts,
+    },
+    sepolia: {
+      url: SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
+      chainId: Number(SEPOLIA_CHAIN_ID || 11155111),
+      accounts,
+    },
+    reactiveLasna: {
+      url: REACTIVE_RPC_URL || "https://lasna-rpc.rnk.dev/",
+      chainId: Number(REACTIVE_CHAIN_ID || 5318007),
       accounts,
     },
   },

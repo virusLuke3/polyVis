@@ -1,15 +1,14 @@
 # polyVis
 
-本仓库默认使用英文文档。
+这个仓库现在已经按 Reactive Network 黑客松提交结构整理为：
+`PolySignal - Reactive Polymarket Whale Alert`
 
-English entry:
-[English README / README.md](/Users/jiahuaiyu/develop/hackthon/polyVis/README.md)
+英文版说明是主文档：
+[README.md](./README.md)
 
-`polyVis` 现在是 Somnia Reactivity Mini Hackathon 的主项目结构：
-`PolySignal - Somnia Reactive Trading Advisory Dashboard`。
+## 先说结论
 
-项目以 `Foundry-first` 为主，内置 Clash Verge 代理适配，核心亮点是 Somnia 原生链上响应式流程：
-实时 Polymarket 成交先被中继到 Somnia，Somnia 订阅自动触发响应式合约，最后前端消费链上的 `AlphaSignal` 结果。
+在这次改造之前，你的项目**还不够稳妥地满足**比赛要求。
 
 ## 产品亮点展示
 
@@ -31,163 +30,109 @@ English entry:
 ![活跃市场监控](./figures/demo4.png)  
 *能够实时观测单一市场的“同一方向连击”、“极端资金面”和“大户入场”等多维指标，让预测市场里的散户不再盲目。*
 
-## 项目概览
+主要原因：
 
-- `contracts/`
-  - `PolymarketTradeBridge.sol`：接收 Polymarket 成交中继的 Somnia 桥合约。
-  - `PolySignalReactive.sol`：Somnia 响应式处理合约，链上计算 8 种异常规则并发出 `AlphaSignal`。
-  - `PolySignalAccessPass.sol`：最小可用的高级访问权限合约，用于钱包付费解锁。
-  - `MockPolymarket.sol`：保留旧名称兼容层。
-- `scripts/`
-  - `fetchPolymarketData.js`：抓取 Gamma 市场元数据和 Polygon `OrderFilled` 日志到本地快照。
-  - `relayPolymarketTrade.js`：把可疑 Polymarket 交易中继到 `PolymarketTradeBridge`。
-  - `startRealtimeDashboard.js`：运行实时抓取循环并提供 dashboard 服务。
-  - `deploy-foundry.sh`：部署 bridge、reactive contract 和 access pass。
-  - `create-subscription.sh`：创建 Somnia 原生订阅。
-  - `doctor.sh`：检查 Somnia RPC、Polygon RPC、Gamma API 和 relayer 身份。
-- `scripts/lib/`
-  - `proxy.js` / `proxy-env.sh`：注入 Clash Verge 代理环境。
-  - `anomaly.js`：计算中继给链上的异常画像。
-  - `reactiveSignal.js`：本地镜像链上信号判定逻辑，用于预览。
-- `public/`
-  - 浏览器 dashboard 资源，包括钱包连接和 Premium 解锁界面。
-- `.env` / `.env.example`
-  - 根目录运行配置。
+- 原来的 `PolySignalReactive.sol` 是 Somnia 风格的回调处理，不是标准 Reactive Network `Reactive Contract`
+- 缺少标准的 `Destination callback contract`
+- 缺少清晰的 `Origin + Reactive + Destination` 三段式仓库结构
+- 缺少按比赛要求组织好的部署工作流、地址表、交易哈希记录模板
 
-## 为什么满足 Somnia Reactivity 要求
+现在仓库里已经补齐了 Reactive Network 版本的关键部分。
 
-后端 relayer 只负责把 Polymarket 交易送进 Somnia。
+## 现在的标准提交结构
 
-真正的触发决策发生在链上：
+- `contracts/reactive/PolySignalOrigin.sol`
+  - Sepolia 上的 Origin 合约
+  - 接收中继后的 Polymarket 异常交易摘要，并发出 `TradeSignalObserved`
+- `contracts/reactive/PolySignalReactiveNetwork.sol`
+  - Reactive Network 上的标准 Reactive Contract
+  - 基于 `AbstractReactive`
+  - 监听 Origin 事件并自动触发 callback
+- `contracts/reactive/PolySignalDestination.sol`
+  - Sepolia 上的 Destination callback 合约
+  - 基于 `AbstractCallback`
+  - 接收回调并把最终 alpha signal 落到链上
+- `scripts/deploy-reactive-foundry.sh`
+  - 一键部署 Origin / Destination / Reactive
+- `scripts/relayPolymarketToOrigin.js`
+  - 拉取 Polymarket 数据并把异常交易提交到 Origin
+- `test/PolySignalReactiveNetwork.js`
+  - 本地端到端测试，模拟 `Origin -> Reactive -> Destination`
 
-1. 可疑 Polymarket 成交被标准化后发到 `PolymarketTradeBridge.logTrade(...)`
-2. `PolymarketTradeBridge` 发出 `TradeBridged(...)`
-3. Somnia 原生订阅设施捕获这个事件
-4. Somnia 自动调用 `PolySignalReactive.onEvent(...)`
-5. `PolySignalReactive` 在链上判断是否满足阈值，并在命中时发出 `AlphaSignal(...)`
+## 新的链路
 
-也就是说，交易建议的触发不是 cron job，也不是传统后端事件循环决定的。
+现在主提交流程是：
 
-## 八种响应式规则
+`Polygon Polymarket trade -> Sepolia Origin -> Reactive Lasna RC -> Sepolia Destination`
 
-当前原型会把结构化异常画像中继到链上，再在 Somnia 上判断以下 8 类规则：
+运行逻辑：
 
-1. `NEW_WALLET_WHALE`
-2. `HIGH_CONVICTION_ENTRY`
-3. `RAPID_ACCUMULATION`
-4. `SAME_SIDE_STREAK`
-5. `COUNTERPARTY_CONCENTRATION`
-6. `MARKET_IMPACT_SPIKE`
-7. `WASH_CLUSTER`
-8. `SMART_MONEY_FOLLOWTHROUGH`
+1. 真实的 Polymarket 交易先发生在 Polygon。
+2. 脚本抓取这笔交易，并计算异常画像。
+3. 脚本调用 Sepolia 上的 `PolySignalOrigin.reportTradeSignal(...)`。
+4. Origin 发出 `TradeSignalObserved`。
+5. Reactive Network 上的 `PolySignalReactiveNetwork` 监听到这个事件。
+6. RC 在链上执行规则判断。
+7. 如果达到阈值，RC 发出 `Callback(...)`。
+8. Sepolia 上的 `PolySignalDestination.recordSignal(...)` 被自动调用。
+9. 最终 alpha signal 在 Destination 合约中持久化。
 
-这些指标虽然来自 Polymarket 的实时成交历史，但最后的触发仍然发生在 Somnia 上的 `PolySignalReactive` 合约里。
+## 为什么这比普通 Solidity 更符合比赛要求
 
-## 钱包与付费访问
+因为这里的关键自动化不是后端手动写死的，而是：
 
-项目现在已经补了一个最小可用的用户付费流程：
+- Reactive Contract 真正监听链上事件
+- 事件出现后自动触发下一笔目标交易
+- 目标交易的落点是独立的 Destination 合约
 
-- 顶栏 `Connect Wallet`
-- Somnia 上的 `PolySignalAccessPass`
-- `Unlock Premium` 按钮
-- 付费后解锁 `Alpha Signal Feed`
-- 付费后解锁详细交易解释
+如果没有 Reactive 层：
 
-当前这版最小模型使用 Somnia 原生 `STT` 支付，通过 `purchaseAccess()` 购买访问权限。
+- 你只能依赖中心化 bot / cron / 后端服务
+- 自动触发链上动作这件事无法通过合约结构清晰表达
+- 评委很容易判定“只是普通 Solidity 合约部署到某条链上”
 
-## 如何抓取 Polymarket 数据
-
-现在根目录脚本已经内置了 Polymarket 数据抓取逻辑，因此原型不再依赖 `polyFake/`。
-
-- 市场元数据来源：Gamma API
-  - `question`
-  - `conditionId`
-  - `clobTokenIds`
-  - `outcomePrices`
-  - 活跃市场分页
-- 链上成交真相来源：Polygon 交易日志
-  - `CTF Exchange` 的 `OrderFilled`
-  - `NegRisk Exchange` 的 `OrderFilled`
-
-交易解码规则：
-
-- `makerAssetId == 0` 表示用 USDC 买入
-- `takerAssetId == 0` 表示对手方在卖 outcome token
-- 非零资产 ID 就是 Polymarket outcome token ID
-
-## 常用命令
+## 你现在怎么跑
 
 ```bash
 npm install
 cp .env.example .env
-npm run doctor
-npm run compile
-npm run deploy:somnia
-npm run subscribe:somnia
-npm run relayer:address
-npm start
+forge build
+npm test
+npm run deploy:reactive
+npm run relay:reactive
 ```
 
-启动后打开 `http://localhost:3000` 使用 dashboard。
+说明：
 
-## 部署说明
+- `forge build`：编译所有合约
+- `npm test`：跑本地端到端测试
+- `npm run deploy:reactive`：部署到 `Sepolia + Reactive Lasna`
+- `npm run relay:reactive`：把真实 Polymarket 异常交易提交到 Origin
 
-`npm run deploy:somnia` 现在会同时部署 3 个合约，并自动写回 `.env`：
+## 本地已经验证的内容
 
-- `POLYMARKET_TRADE_BRIDGE_ADDRESS`
-- `POLYSIGNAL_REACTIVE_ADDRESS`
-- `POLYSIGNAL_ACCESS_PASS_ADDRESS`
+当前我已经帮你验证到：
 
-每次重新部署 bridge 或 reactive contract 后，都要重新执行：
+- `forge build` 通过
+- `npm test` 通过
+- 本地完整模拟了：
+  - Origin 事件产生
+  - Reactive Contract 收到日志并执行
+  - RC 发出 callback
+  - Destination 成功记录 signal
 
-```bash
-npm run subscribe:somnia
-```
+## 还需要你在真实网络上补的部分
 
-因为 Somnia subscription 必须重新绑定到最新地址。
+这些必须在你自己的钱包和 RPC 环境里实跑后才能真实填写：
 
-## Relayer 地址
+- Sepolia 部署地址
+- Reactive Lasna 部署地址
+- Origin 交易哈希
+- Reactive 交易哈希
+- Destination 交易哈希
 
-`RELAYER_ADDRESS` 是实际向 `PolymarketTradeBridge` 提交 `logTrade(...)` 的 EOA 地址。
+我已经把提交模板放在：
 
-最简单的方式是直接使用 `PRIVATE_KEY` 推导出来的地址：
+- `docs/HACKATHON_SUBMISSION.md`
 
-```bash
-npm run relayer:address
-```
-
-或者直接运行：
-
-```bash
-cast wallet address --private-key "$PRIVATE_KEY"
-```
-
-脚本支持带或不带 `0x` 前缀的 `PRIVATE_KEY`。
-
-## Clash / VPN 说明
-
-项目会把 Clash 默认配置直接写进 `.env`，并在代码里自动加载。
-
-- 默认 mixed proxy：`127.0.0.1:7898`
-- Node 脚本自动从 `scripts/lib/proxy.js` 应用代理
-- shell 脚本自动从 `scripts/lib/proxy-env.sh` 导出代理
-
-如果 Somnia 或 Gamma 依然失败，可以执行：
-
-```bash
-npm run doctor
-```
-
-## Somnia Legacy Gas
-
-Somnia RPC 可能不支持 EIP-1559 费用估算，因此项目默认启用 legacy gas。
-
-- `.env`：`SOMNIA_USE_LEGACY_TX=true`
-- 可选固定 gas price：`SOMNIA_GAS_PRICE_WEI=1000000000`
-
-它会影响：
-
-- `npm run deploy:somnia`
-- `npm run subscribe:somnia`
-- `npm run relay:trade`
-- `npm start`
+你部署并跑完真链流程后，把地址和 tx hash 填进去即可。

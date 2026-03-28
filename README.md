@@ -3,13 +3,15 @@
 English is the default documentation language for this repository.
 
 Chinese entry:
-[中文说明 / README.zh-CN.md](/Users/jiahuaiyu/develop/hackthon/polyVis/README.zh-CN.md)
+[中文说明 / README.zh-CN.md](./README.zh-CN.md)
 
-`polyVis` is the main project structure for the Somnia Reactivity Mini Hackathon pivot:
-`PolySignal - Somnia Reactive Trading Advisory Dashboard`.
+`polyVis` is now structured as a Reactive Network hackathon submission for:
+`PolySignal - Reactive Polymarket Whale Alert`.
 
-The project is `Foundry-first`, proxy-aware for Clash Verge, and centered on a Somnia-native reactive flow:
-live Polymarket trades are relayed into Somnia, Somnia subscriptions trigger the reactive contract on-chain, and the dashboard consumes the resulting `AlphaSignal` events.
+The submission-ready path is no longer the legacy Somnia-only flow.
+For the hackathon, the canonical workflow is:
+
+`Polygon Polymarket trade -> Sepolia Origin -> Reactive Network RC on Lasna -> Sepolia Destination callback`
 
 ## Product Highlights
 
@@ -31,163 +33,195 @@ Here are the key aspects of our Somnia Reactivity Demo:
 ![Tracked Markets](./figures/demo4.png)  
 *The tracking directory flags suspicious Polymarket order flows, assigning anomaly profiles like "Same-side Streak" and "Market Impact Spike" natively via smart contracts.*
 
-## Overview
+## Quick verdict
 
-- `contracts/`
-  - `PolymarketTradeBridge.sol`: bridge contract that receives relayed Polymarket trades on Somnia.
-  - `PolySignalReactive.sol`: Somnia reactive handler that evaluates 8 anomaly rules and emits `AlphaSignal`.
-  - `PolySignalAccessPass.sol`: minimal premium access contract for wallet-gated dashboard unlocks.
-  - `MockPolymarket.sol`: compatibility wrapper kept for the old contract name.
-- `scripts/`
-  - `fetchPolymarketData.js`: fetches Gamma market metadata and Polygon `OrderFilled` logs into a local snapshot.
-  - `relayPolymarketTrade.js`: relays a suspicious Polymarket trade into `PolymarketTradeBridge`.
-  - `startRealtimeDashboard.js`: runs the live ingestion loop and serves the dashboard.
-  - `deploy-foundry.sh`: deploys bridge, reactive contract, and access pass.
-  - `create-subscription.sh`: creates the Somnia native subscription.
-  - `doctor.sh`: checks Somnia RPC, Polygon RPC, Gamma API, and relayer identity.
-- `scripts/lib/`
-  - `proxy.js` / `proxy-env.sh`: applies Clash Verge proxy settings.
-  - `anomaly.js`: computes the relayed anomaly profile.
-  - `reactiveSignal.js`: mirrors the on-chain signal evaluation for local previewing.
-- `public/`
-  - browser dashboard assets, including wallet connect and premium unlock UI.
-- `.env` / `.env.example`
-  - root-level runtime configuration.
+Before this refactor, the project was **not strong enough** for the Reactive Contracts requirement.
 
-## Why This Satisfies Somnia Reactivity
+Why:
 
-The relayer only forwards Polymarket trades into Somnia.
+- the old `PolySignalReactive.sol` was a Somnia callback-style contract, not a standard Reactive Network RC built on `AbstractReactive`
+- there was no standard Reactive Network destination callback contract
+- there was no clear `Origin + Reactive + Destination` repository structure for judges to inspect
+- the workflow and submission evidence sections were not organized around Reactive Network expectations
 
-The actual trigger decision is on-chain:
+This repository now includes all required pieces for the Reactive Network version of the project.
 
-1. A suspicious Polymarket trade is normalized and sent to `PolymarketTradeBridge.logTrade(...)`.
-2. `PolymarketTradeBridge` emits `TradeBridged(...)`.
-3. Somnia native subscription infrastructure detects that event.
-4. Somnia calls `PolySignalReactive.onEvent(...)`.
-5. `PolySignalReactive` evaluates the trade on-chain and emits `AlphaSignal(...)` if thresholds are met.
+## Contracts included
 
-That means the advisory trigger is not driven by a cron job or a backend event loop.
+Reactive Network submission path:
 
-## Eight Reactive Rules
+- `contracts/reactive/PolySignalOrigin.sol`
+  - custom Origin contract on Sepolia
+  - receives relayed Polymarket anomaly summaries and emits `TradeSignalObserved`
+- `contracts/reactive/PolySignalReactiveNetwork.sol`
+  - standard Reactive Contract
+  - built on `AbstractReactive`
+  - subscribes to `TradeSignalObserved` on the origin chain
+  - reacts automatically and emits a Reactive Network `Callback`
+- `contracts/reactive/PolySignalDestination.sol`
+  - Destination callback contract on Sepolia
+  - built on `AbstractCallback`
+  - receives the callback and stores the final alpha signal on-chain
+- `contracts/mocks/MockReactiveCallbackProxy.sol`
+  - local testing helper only
 
-The current prototype relays a structured anomaly profile and then evaluates these rule classes on-chain:
+Vendored Reactive base files:
 
-1. `NEW_WALLET_WHALE`
-2. `HIGH_CONVICTION_ENTRY`
-3. `RAPID_ACCUMULATION`
-4. `SAME_SIDE_STREAK`
-5. `COUNTERPARTY_CONCENTRATION`
-6. `MARKET_IMPACT_SPIKE`
-7. `WASH_CLUSTER`
-8. `SMART_MONEY_FOLLOWTHROUGH`
+- `lib/reactive-lib/src/interfaces/IReactive.sol`
+- `lib/reactive-lib/src/interfaces/ISystemContract.sol`
+- `lib/reactive-lib/src/interfaces/ISubscriptionService.sol`
+- `lib/reactive-lib/src/interfaces/IPayer.sol`
+- `lib/reactive-lib/src/interfaces/IPayable.sol`
+- `lib/reactive-lib/src/abstract-base/AbstractReactive.sol`
+- `lib/reactive-lib/src/abstract-base/AbstractCallback.sol`
+- `lib/reactive-lib/src/abstract-base/AbstractPayer.sol`
 
-The relayer derives the metrics from live Polymarket `OrderFilled` history, but the final trigger still happens inside `PolySignalReactive` on Somnia.
+Legacy Somnia files are still present for reference, but they are **not** the main hackathon submission path anymore.
 
-## Wallet And Premium Access
+## Why Reactive Contracts matter here
 
-The dashboard now includes a minimal user-facing monetization flow:
+Problem:
 
-- `Connect Wallet` in the top bar
-- `PolySignalAccessPass` on Somnia
-- `Unlock Premium` button in the alpha panel
-- premium-gated `Alpha Signal Feed`
-- premium-gated detailed trade explanations
+- Polymarket whale or coordinated trades appear on Polygon
+- a normal dashboard or backend can detect them off-chain, but cannot produce a trust-minimized, chain-native automation path by itself
+- if a team only logs results in a backend or manually calls a second contract, the system is not truly reactive
 
-The current minimal access model uses Somnia native `STT` payment through `purchaseAccess()`.
+Reactive solution:
 
-## How Polymarket Data Is Fetched
+1. A suspicious Polymarket trade is relayed into `PolySignalOrigin` on Sepolia.
+2. `PolySignalOrigin` emits `TradeSignalObserved`.
+3. `PolySignalReactiveNetwork` on Reactive Network listens to that exact event subscription.
+4. When the event appears, the RC evaluates the anomaly rules on-chain.
+5. If thresholds are met, the RC emits a Reactive `Callback`.
+6. The callback executes `recordSignal(...)` on `PolySignalDestination` on Sepolia.
+7. The destination contract persists the alert on-chain as the final alpha signal feed.
 
-The root scripts include the Polymarket fetching logic directly, so the prototype does not depend on `polyFake/`.
+Without the Reactive layer, this becomes much harder because:
 
-- Market metadata source: Gamma API
-  - `question`
-  - `conditionId`
-  - `clobTokenIds`
-  - `outcomePrices`
-  - active market pagination
-- On-chain truth source: Polygon exchange logs
-  - `OrderFilled` from `CTF Exchange`
-  - `OrderFilled` from `NegRisk Exchange`
+- the detection and action path would depend on a centralized bot or cron
+- cross-environment automation would not be verifiable from contract code alone
+- the “listen for an event, then automatically trigger a destination transaction” property would be missing
 
-Trade decoding rules:
+## Repository workflow
 
-- `makerAssetId == 0` means a buy using USDC.
-- `takerAssetId == 0` means the other side is selling the outcome token.
-- the non-zero asset ID is the Polymarket outcome token ID.
+### 1. Deploy contracts
+
+```bash
+npm install
+cp .env.example .env
+npm run deploy:reactive
+```
+
+This deploys:
+
+- `PolySignalOrigin` to Sepolia
+- `PolySignalDestination` to Sepolia
+- `PolySignalReactiveNetwork` to Reactive Lasna
+
+and writes the addresses back into `.env`.
+
+### 2. Relay a real Polymarket trade into Origin
+
+```bash
+npm run relay:reactive
+```
+
+This script:
+
+- fetches Polymarket market metadata from Gamma
+- scans Polygon `OrderFilled` logs
+- finds a large recent trade
+- computes the anomaly profile
+- submits `reportTradeSignal(...)` to `PolySignalOrigin`
+
+### 3. Let Reactive Network process the event
+
+After the origin transaction lands:
+
+- Reactive Network observes the `TradeSignalObserved` event
+- the RC on Lasna runs `react(...)`
+- the RC emits a `Callback(...)`
+- the callback proxy calls `recordSignal(...)` on `PolySignalDestination`
+
+### 4. Record evidence for submission
+
+Fill the contract addresses and transaction hashes in:
+
+- `docs/HACKATHON_SUBMISSION.md`
 
 ## Commands
 
 ```bash
 npm install
-cp .env.example .env
-npm run doctor
-npm run compile
-npm run deploy:somnia
-npm run subscribe:somnia
-npm run relayer:address
-npm start
+forge build
+npm test
+npm run deploy:reactive
+npm run relay:reactive
 ```
 
-Open `http://localhost:3000` after startup to use the dashboard.
+## Local verification status
 
-## Deployment Notes
+Local verification is already included:
 
-`npm run deploy:somnia` now deploys three contracts and writes them back into `.env`:
+- `forge build` passes
+- `npm test` passes
+- the test simulates the full flow:
+  - Origin emits an event
+  - Reactive contract receives the log
+  - RC emits `Callback`
+  - destination callback stores the signal
 
-- `POLYMARKET_TRADE_BRIDGE_ADDRESS`
-- `POLYSIGNAL_REACTIVE_ADDRESS`
-- `POLYSIGNAL_ACCESS_PASS_ADDRESS`
+Main local test:
 
-After each redeploy of the bridge or reactive contract, run:
+- `test/PolySignalReactiveNetwork.js`
 
-```bash
-npm run subscribe:somnia
-```
+## Networks and environment
 
-because the Somnia subscription must point at the latest deployed addresses.
+Important `.env` values for the Reactive submission path:
 
-## Relayer Address
+- `SEPOLIA_RPC_URL`
+- `SEPOLIA_CHAIN_ID=11155111`
+- `REACTIVE_RPC_URL`
+- `REACTIVE_CHAIN_ID=5318007`
+- `REACTIVE_CALLBACK_PROXY_ADDRESS`
+- `POLYSIGNAL_ORIGIN_ADDRESS`
+- `POLYSIGNAL_DESTINATION_ADDRESS`
+- `POLYSIGNAL_REACTIVE_RC_ADDRESS`
 
-`RELAYER_ADDRESS` is the EOA that submits `logTrade(...)` into `PolymarketTradeBridge`.
+Relevant scripts:
 
-In the simplest setup, use the address derived from the same `PRIVATE_KEY`:
+- `scripts/deploy-reactive-foundry.sh`
+- `scripts/relayPolymarketToOrigin.js`
 
-```bash
-npm run relayer:address
-```
+## Submission checklist mapping
 
-or directly:
+The hackathon requirements are covered like this:
 
-```bash
-cast wallet address --private-key "$PRIVATE_KEY"
-```
+- valid use of Reactive Contracts
+  - `contracts/reactive/PolySignalReactiveNetwork.sol`
+- full contract code
+  - Origin, Reactive, Destination, deploy scripts, relay script, docs are all in-repo
+- Origin contract included
+  - `contracts/reactive/PolySignalOrigin.sol`
+- deployed contract addresses
+  - fill `docs/HACKATHON_SUBMISSION.md`
+- explain problem and solution
+  - this README + `docs/HACKATHON_SUBMISSION.md`
+- post-deployment workflow
+  - this README + `docs/HACKATHON_SUBMISSION.md`
+- full transaction hash record
+  - fill `docs/HACKATHON_SUBMISSION.md` after running on live networks
 
-The scripts accept `PRIVATE_KEY` with or without a `0x` prefix.
+## Important note
 
-## Clash / VPN Notes
+I completed the repository refactor, local compile, and local end-to-end test.
 
-This project writes Clash defaults directly into `.env` and applies them from code.
+What still requires your live wallet / RPC funding:
 
-- default mixed proxy: `127.0.0.1:7898`
-- Node scripts automatically apply proxy envs from `scripts/lib/proxy.js`
-- shell scripts automatically export proxy envs from `scripts/lib/proxy-env.sh`
+- actual Sepolia deployment
+- actual Lasna deployment
+- actual callback execution on live Reactive Network
+- final contract addresses
+- final origin / reactive / destination transaction hashes
 
-If Somnia or Gamma still fails, run:
-
-```bash
-npm run doctor
-```
-
-## Somnia Legacy Gas
-
-Somnia RPC may reject EIP-1559 fee estimation. The project defaults to legacy gas mode.
-
-- `.env`: `SOMNIA_USE_LEGACY_TX=true`
-- optional fixed gas price: `SOMNIA_GAS_PRICE_WEI=1000000000`
-
-This affects:
-
-- `npm run deploy:somnia`
-- `npm run subscribe:somnia`
-- `npm run relay:trade`
-- `npm start`
+Those live values cannot be truthfully pre-filled without your wallet, funds, and a real deployment run.
