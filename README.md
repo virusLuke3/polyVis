@@ -3,7 +3,7 @@
 English is the default documentation language for this repository.
 
 Demo: https://youtu.be/9P1pz3HloqI
-
+PPT: PolySignal_Reactive_Whale_Alerts.pptx
 
 Chinese entry:
 [中文说明 / README.zh-CN.md](./README.zh-CN.md)
