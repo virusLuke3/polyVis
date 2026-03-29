@@ -63,7 +63,7 @@ function bpsToPercent(value) {
 
 function buildNoSignalExplanation(payload, matchedFlags, finalRiskScoreBps) {
   if (matchedFlags !== 0) {
-    return `Monitored only: anomaly traits were detected, but final risk ${bpsToPercent(finalRiskScoreBps)} stayed below the 30.0% alpha threshold.`;
+    return `Monitored only: anomaly traits were detected, but final risk ${bpsToPercent(finalRiskScoreBps)} stayed below the 18.0% alpha threshold.`;
   }
 
   return `No reactive trigger: size ${bpsToPercent(payload.oddsBps)} odds and wallet behavior stayed below whale, conviction, and concentration thresholds.`;
@@ -72,34 +72,34 @@ function buildNoSignalExplanation(payload, matchedFlags, finalRiskScoreBps) {
 function evaluateReactiveSignal(payload) {
   let matchedFlags = 0;
 
-  if (payload.amount >= 1_000e6 && payload.accountAgeDays <= 30) {
+  if (payload.amount >= 250e6 && payload.accountAgeDays <= 45) {
     matchedFlags |= FLAG_NEW_WALLET_WHALE;
   }
-  if (payload.oddsBps >= 5_500 && payload.amount >= 500e6) {
+  if (payload.oddsBps >= 5_200 && payload.amount >= 250e6) {
     matchedFlags |= FLAG_HIGH_CONVICTION_ENTRY;
   }
-  if (payload.recentTradeCount >= 2 && payload.totalPositionUsd >= 2_000e6) {
+  if (payload.recentTradeCount >= 2 && payload.totalPositionUsd >= 750e6) {
     matchedFlags |= FLAG_RAPID_ACCUMULATION;
   }
   if (payload.sameSideStreak >= 2) {
     matchedFlags |= FLAG_SAME_SIDE_STREAK;
   }
-  if (payload.recentTradeCount >= 2 && payload.counterpartyConcentrationBps >= 5_000) {
+  if (payload.recentTradeCount >= 2 && payload.counterpartyConcentrationBps >= 4_000) {
     matchedFlags |= FLAG_COUNTERPARTY_CONCENTRATION;
   }
-  if (payload.marketImpactBps >= 100) {
+  if (payload.marketImpactBps >= 40) {
     matchedFlags |= FLAG_MARKET_IMPACT_SPIKE;
   }
-  if (payload.washClusterScoreBps >= 3_000) {
+  if (payload.washClusterScoreBps >= 2_200) {
     matchedFlags |= FLAG_WASH_CLUSTER;
   }
-  if (payload.smartMoneyScoreBps >= 5_000) {
+  if (payload.smartMoneyScoreBps >= 3_500) {
     matchedFlags |= FLAG_SMART_MONEY_FOLLOWTHROUGH;
   }
 
   const derivedRiskScoreBps = deriveRiskScore(matchedFlags);
   const finalRiskScoreBps = Math.max(payload.riskScoreBps || 0, derivedRiskScoreBps);
-  const shouldEmit = matchedFlags !== 0 && finalRiskScoreBps >= 1_000;
+  const shouldEmit = matchedFlags !== 0 && finalRiskScoreBps >= 1_800;
   const analysisCode = shouldEmit ? pickPrimarySignal(matchedFlags) : 0;
 
   return {

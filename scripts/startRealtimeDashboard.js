@@ -152,7 +152,7 @@ const state = {
     activeMarketsLimit: Number(process.env.POLYMARKET_ACTIVE_MARKETS_LIMIT || "3000"),
     activeMarketsPageSize: Number(process.env.POLYMARKET_ACTIVE_MARKETS_PAGE_SIZE || "500"),
     marketRefreshMs: Number(process.env.POLYMARKET_MARKET_REFRESH_MS || "900000"),
-    minWhaleUsd: Number(process.env.POLYSIGNAL_MIN_WHALE_USDC || "25000"),
+    minWhaleUsd: Number(process.env.POLYSIGNAL_MIN_WHALE_USDC || "5000"),
     pollIntervalMs: Number(process.env.POLYSIGNAL_POLL_INTERVAL_MS || "12000"),
     dashboardPort: Number(process.env.PORT || "3000"),
     somniaChainId: Number(process.env.SOMNIA_CHAIN_ID || "50312"),
@@ -278,6 +278,16 @@ async function fetchJsonWithRetry(url, options = {}) {
 function restoreSnapshotState() {
   const snapshot = readJsonIfExists(SNAPSHOT_PATH);
   if (!snapshot || typeof snapshot !== "object") {
+    return;
+  }
+
+  const snapshotStartedAt = snapshot.startedAt ? new Date(snapshot.startedAt).getTime() : 0;
+  const snapshotIsFresh =
+    Number.isFinite(snapshotStartedAt) && snapshotStartedAt > 0
+      ? Date.now() - snapshotStartedAt < 6 * 60 * 60 * 1000
+      : false;
+
+  if (!snapshotIsFresh) {
     return;
   }
 
@@ -754,6 +764,32 @@ function hydrateTradeForDashboard(trade, relayTxHash, signalProjection) {
   };
 }
 
+function buildProjectedSignalCard(trade, payload, signalProjection, relayResult) {
+  return {
+    id: `projected-${trade.txHash}-${trade.logIndex}`,
+    txHash: relayResult?.txHash || trade.txHash,
+    marketSlug: trade.marketSlug,
+    marketUrl: trade.marketUrl,
+    trader: trade.trader,
+    traderLabel: shortAddress(trade.trader),
+    marketTitle: trade.marketTitle,
+    amountUsd: formatUsd6(trade.amount),
+    directionLabel: trade.direction === 0 ? "YES" : "NO",
+    analysisCode: Number(signalProjection.analysisCode || 0),
+    matchedFlags: Number(signalProjection.matchedFlags || 0),
+    anomalyLabels:
+      signalProjection.matchedLabels ||
+      decodeAnomalyFlags(Number(signalProjection.matchedFlags || 0)).map((item) => item.label),
+    riskScoreBps: Number(signalProjection.finalRiskScoreBps || payload.riskScoreBps || 0),
+    oddsBps: Number(payload.oddsBps || 0),
+    totalPositionUsd: formatUsd6(payload.totalPositionUsd || 0),
+    thesis: signalProjection.thesis,
+    observedAt: new Date().toISOString(),
+    isProjected: true,
+    relayTxHash: relayResult?.txHash || null,
+  };
+}
+
 async function projectSignal(payload) {
   return evaluateReactiveSignal(payload);
 }
@@ -1053,8 +1089,8 @@ async function pollOnce(cursor) {
     state.latestBlock = Number(latestBlock);
     persistState();
 
-    const configuredBackfill = BigInt(process.env.POLYSIGNAL_START_BLOCKS_BACK || "250");
-    const coldStartBackfill = configuredBackfill < COLD_START_BLOCKS ? configuredBackfill : COLD_START_BLOCKS;
+    const configuredBackfill = BigInt(process.env.POLYSIGNAL_START_BLOCKS_BACK || "20");
+    const coldStartBackfill = configuredBackfill > 0n ? configuredBackfill : COLD_START_BLOCKS;
     const fromBlock = cursor.lastProcessedBlock
       ? cursor.lastProcessedBlock + 1n
       : latestBlock > coldStartBackfill
@@ -1162,6 +1198,23 @@ async function pollOnce(cursor) {
           anomalies: payload.anomalyLabels.join(", "),
           relayTxHash: enrichedTrade.relayTxHash,
         });
+      }
+
+      if (signalProjection.shouldEmit) {
+        const projectedCard = buildProjectedSignalCard(trade, payload, signalProjection, relayResult);
+        const existingProjectedIndex = state.alphaSignals.findIndex(
+          (item) => item.id === projectedCard.id || item.sourceTradeId === trade.sourceTradeId
+        );
+        if (existingProjectedIndex === -1) {
+          state.alphaSignals = [projectedCard, ...state.alphaSignals].slice(0, 50);
+          updateMarketSummary(trade.marketSlug, (current) => ({
+            ...current,
+            alphaSignals: current.alphaSignals + 1,
+            lastAlphaAt: projectedCard.observedAt,
+            latestThesis: projectedCard.thesis || current.latestThesis,
+            lastAnomalies: projectedCard.anomalyLabels,
+          }));
+        }
       }
 
       if ((index + 1) % PROGRESS_PERSIST_EVERY === 0) {

@@ -72,6 +72,55 @@ const VERIFIED_ONCHAIN_ALPHA_SAMPLE = {
   observedAt: "verified",
   isVerifiedSample: true,
 };
+const DEMO_SIGNAL_SAMPLES = [
+  VERIFIED_ONCHAIN_ALPHA_SAMPLE,
+  {
+    id: "demo-projected-alpha-rapid-accumulation",
+    marketSlug: "will-the-iranian-regime-fall-by-june-30",
+    marketTitle: "Will the Iranian regime fall by June 30?",
+    marketUrl: "https://polymarket.com/event/will-the-iranian-regime-fall-by-june-30",
+    trader: "",
+    traderLabel: "Projected Demo",
+    amountUsd: 18500,
+    directionLabel: "YES",
+    analysisCode: 3,
+    anomalyLabels: ["Rapid Accumulation", "Same-side Streak", "Smart-money Follow-through"],
+    riskScoreBps: 7800,
+    oddsBps: 6120,
+    totalPositionUsd: 46200,
+    thesis:
+      "Projected alpha sample: a cluster of same-direction fills built a meaningful position quickly, pushing this market into a rapid-accumulation watch state.",
+    txHash: "",
+    relayTxHash: "",
+    sourceTradeId: "demo-rapid-accumulation",
+    observedAt: "demo",
+    isProjected: true,
+    isDemoSample: true,
+  },
+  {
+    id: "demo-projected-alpha-market-impact",
+    marketSlug: "netanyahu-out-by-march-31-854",
+    marketTitle: "Netanyahu out before 2027?",
+    marketUrl: "https://polymarket.com/event/netanyahu-out-before-2027",
+    trader: "",
+    traderLabel: "Projected Demo",
+    amountUsd: 12400,
+    directionLabel: "NO",
+    analysisCode: 6,
+    anomalyLabels: ["Market Impact Spike", "Counterparty Concentration", "High Conviction Entry"],
+    riskScoreBps: 7350,
+    oddsBps: 6880,
+    totalPositionUsd: 28400,
+    thesis:
+      "Projected alpha sample: concentrated counterparties and abrupt local impact suggest informed execution rather than passive flow.",
+    txHash: "",
+    relayTxHash: "",
+    sourceTradeId: "demo-market-impact",
+    observedAt: "demo",
+    isProjected: true,
+    isDemoSample: true,
+  },
+];
 const walletState = {
   address: null,
   displayAddress: "NOT CONNECTED",
@@ -228,12 +277,16 @@ function openWalletModal() {
         .join("")
     : '<p class="empty-state">No injected wallet provider was detected in this browser tab.</p>';
 
-  walletModalCopyEl.textContent = hasMetaMaskProvider()
+  const baseCopy = hasMetaMaskProvider()
     ? "MetaMask was detected. Select it explicitly to prevent another wallet from hijacking this dApp request."
     : "MetaMask was not detected in the injected provider list for this tab. If you need MetaMask, enable it for localhost or temporarily disable default wallet takeover in other extensions.";
-  walletModalHintEl.textContent = hasMetaMaskProvider()
-    ? "If OKX keeps opening first, choose MetaMask here before pressing Connect."
+  const baseHint = hasMetaMaskProvider()
+    ? "If OKX keeps opening first, choose MetaMask here and the app will immediately request wallet connection."
     : "Right now this tab is not exposing a MetaMask provider to the page.";
+  walletModalCopyEl.textContent = walletState.error
+    ? `${baseCopy} Last wallet error: ${walletState.error}`
+    : baseCopy;
+  walletModalHintEl.textContent = walletState.error ? walletState.error : baseHint;
   walletModalEl.classList.remove("is-hidden");
   walletModalEl.setAttribute("aria-hidden", "false");
 }
@@ -439,6 +492,7 @@ async function connectWallet() {
   const walletProvider = getWalletProvider();
   if (!walletProvider) {
     walletState.error = "Install MetaMask or another injected wallet.";
+    openWalletModal();
     if (currentState) {
       renderState(currentState);
     }
@@ -491,6 +545,7 @@ async function connectWallet() {
     }
   } catch (error) {
     walletState.error = normalizeWalletError(error);
+    openWalletModal();
   } finally {
     walletState.busy = false;
     if (currentState) {
@@ -946,7 +1001,7 @@ function renderAlphaSignals(state, selectedMarket) {
     ? marketAlphaSignals
     : globalAlphaSignals.length
       ? globalAlphaSignals
-      : [VERIFIED_ONCHAIN_ALPHA_SAMPLE];
+      : DEMO_SIGNAL_SAMPLES;
 
   alphaHeaderChipEl.textContent = hasPremiumAccess()
     ? `${alphaSignals.length} signals`
@@ -1032,10 +1087,16 @@ function renderAlphaSignals(state, selectedMarket) {
             <article class="alpha-card">
               <div class="alpha-card-top">
                 <div>
-                  <p class="micro-label">${signal.isVerifiedSample ? "Verified On-chain Sample" : "Alpha Advisory"}</p>
+                  <p class="micro-label">${
+                    signal.isVerifiedSample
+                      ? "Verified On-chain Sample"
+                      : signal.isProjected
+                        ? "Projected Alpha"
+                        : "Alpha Advisory"
+                  }</p>
                   <h4>${signal.marketTitle}</h4>
                 </div>
-                <span class="direction-badge">${signal.directionLabel}</span>
+                <span class="direction-badge">${signal.isProjected ? `${signal.directionLabel} · PROJECTED` : signal.directionLabel}</span>
               </div>
 
               <div class="alpha-stat-grid">
@@ -1067,11 +1128,21 @@ function renderAlphaSignals(state, selectedMarket) {
 
               <div class="alpha-card-footer">
                 <div>
-                  <span class="micro-label">${signal.isVerifiedSample ? "Somnia callback" : "Tracked wallet"}</span>
+                  <span class="micro-label">${
+                    signal.isVerifiedSample
+                      ? "Somnia callback"
+                      : signal.isProjected
+                        ? "Projected from trade"
+                        : "Tracked wallet"
+                  }</span>
                   ${
                     signal.isVerifiedSample
                       ? `<a href="${explorerLink(signal.txHash)}" target="_blank" rel="noreferrer">${shortHash(signal.txHash || "")}</a>`
-                      : `<a href="${explorerLink(signal.trader)}" target="_blank" rel="noreferrer">${signal.traderLabel}</a>`
+                      : signal.isProjected && (signal.txHash || signal.relayTxHash)
+                        ? `<a href="${explorerLink(signal.relayTxHash || signal.txHash)}" target="_blank" rel="noreferrer">${shortHash(signal.relayTxHash || signal.txHash || "")}</a>`
+                        : signal.isProjected
+                          ? `<span>${signal.traderLabel}</span>`
+                        : `<a href="${explorerLink(signal.trader)}" target="_blank" rel="noreferrer">${signal.traderLabel}</a>`
                   }
                 </div>
                 <div>
@@ -1079,8 +1150,14 @@ function renderAlphaSignals(state, selectedMarket) {
                   <a href="${signal.marketUrl || "#"}" target="_blank" rel="noreferrer">${signal.marketUrl ? "Polymarket" : "Unavailable"}</a>
                 </div>
                 <div>
-                  <span class="micro-label">${signal.isVerifiedSample ? "Bridge tx" : "Signal tx"}</span>
-                  <a href="${explorerLink(signal.isVerifiedSample ? signal.relayTxHash : signal.txHash)}" target="_blank" rel="noreferrer">${shortHash(signal.isVerifiedSample ? signal.relayTxHash || "" : signal.txHash || "")}</a>
+                  <span class="micro-label">${
+                    signal.isVerifiedSample ? "Bridge tx" : signal.isProjected ? "Relay / source tx" : "Signal tx"
+                  }</span>
+                  ${
+                    signal.isVerifiedSample || signal.relayTxHash || signal.txHash
+                      ? `<a href="${explorerLink(signal.isVerifiedSample ? signal.relayTxHash : signal.relayTxHash || signal.txHash)}" target="_blank" rel="noreferrer">${shortHash(signal.isVerifiedSample ? signal.relayTxHash || "" : signal.relayTxHash || signal.txHash || "")}</a>`
+                      : `<span>${signal.isDemoSample ? "demo sample" : "pending"}</span>`
+                  }
                 </div>
               </div>
             </article>
@@ -1201,13 +1278,14 @@ document.addEventListener("click", (event) => {
     selectedWalletProviderId = walletProviderButton.getAttribute("data-wallet-provider");
     const selected = getAvailableWalletProviders().find((entry) => entry.id === selectedWalletProviderId);
     walletState.providerName = selected?.name || "";
-    walletState.error = selected?.name ? `Selected ${selected.name}. Click Connect to continue.` : walletState.error;
+    walletState.error = selected?.name ? `Selected ${selected.name}. Requesting wallet connection...` : walletState.error;
     closeWalletModal();
     if (currentState) {
       renderState(currentState);
     } else {
       renderWalletUi(getFallbackState());
     }
+    void connectWallet();
     return;
   }
 
@@ -1243,6 +1321,15 @@ document.addEventListener("click", (event) => {
 
 connectWalletButtonEl?.addEventListener("click", () => {
   const providers = getAvailableWalletProviders();
+  if (!providers.length) {
+    openWalletModal();
+    if (currentState) {
+      renderState(currentState);
+    } else {
+      renderWalletUi(getFallbackState());
+    }
+    return;
+  }
   if (providers.length > 1 && !selectedWalletProviderId) {
     openWalletModal();
     return;
@@ -1265,57 +1352,66 @@ marketSearchEl?.addEventListener("input", (event) => {
 async function boot() {
   const response = await fetch("/api/state");
   const initialState = await response.json();
+  renderState(initialState);
 
   const walletProvider = getWalletProvider();
   if (walletProvider) {
-    const matchedProvider = getAvailableWalletProviders().find((entry) => entry.provider === walletProvider);
-    if (matchedProvider) {
-      selectedWalletProviderId = matchedProvider.id;
-    }
-    const accounts = await walletProvider.request({ method: "eth_accounts" });
-    const chainIdHex = await walletProvider.request({ method: "eth_chainId" });
-    walletState.providerName = getProviderName(walletProvider);
-    walletState.chainId = Number.parseInt(chainIdHex, 16);
-    if (Array.isArray(accounts) && accounts[0]) {
-      walletState.address = accounts[0];
-      walletState.displayAddress = shortAddress(accounts[0]);
-      try {
-        await refreshWalletAccess(initialState);
-      } catch (error) {
-        walletState.error = error?.message || String(error);
+    try {
+      const matchedProvider = getAvailableWalletProviders().find((entry) => entry.provider === walletProvider);
+      if (matchedProvider) {
+        selectedWalletProviderId = matchedProvider.id;
       }
-    }
-
-    walletProvider.on?.("accountsChanged", async (accountsChanged) => {
-      walletState.address = accountsChanged?.[0] || null;
-      walletState.displayAddress = shortAddress(walletState.address);
-      walletState.hasAccess = false;
-      walletState.expiresAt = 0;
-      walletState.error = "";
-      if (walletState.address && currentState) {
+      const accounts = await walletProvider.request({ method: "eth_accounts" });
+      const chainIdHex = await walletProvider.request({ method: "eth_chainId" });
+      walletState.providerName = getProviderName(walletProvider);
+      walletState.chainId = Number.parseInt(chainIdHex, 16);
+      if (Array.isArray(accounts) && accounts[0]) {
+        walletState.address = accounts[0];
+        walletState.displayAddress = shortAddress(accounts[0]);
         try {
-          await refreshWalletAccess(currentState);
+          await refreshWalletAccess(initialState);
         } catch (error) {
           walletState.error = error?.message || String(error);
         }
       }
-      if (currentState) {
-        renderState(currentState);
-      }
-    });
+    } catch (error) {
+      walletState.error = normalizeWalletError(error);
+    }
 
-    walletProvider.on?.("chainChanged", () => {
-      try {
-        walletState.chainId = Number.parseInt(walletProvider.chainId || "0x0", 16);
-      } catch {}
-      if (currentState) {
-        void refreshWalletAccess(currentState)
-          .catch((error) => {
+    try {
+      walletProvider.on?.("accountsChanged", async (accountsChanged) => {
+        walletState.address = accountsChanged?.[0] || null;
+        walletState.displayAddress = shortAddress(walletState.address);
+        walletState.hasAccess = false;
+        walletState.expiresAt = 0;
+        walletState.error = "";
+        if (walletState.address && currentState) {
+          try {
+            await refreshWalletAccess(currentState);
+          } catch (error) {
             walletState.error = error?.message || String(error);
-          })
-          .finally(() => renderState(currentState));
-      }
-    });
+          }
+        }
+        if (currentState) {
+          renderState(currentState);
+        }
+      });
+
+      walletProvider.on?.("chainChanged", () => {
+        try {
+          walletState.chainId = Number.parseInt(walletProvider.chainId || "0x0", 16);
+        } catch {}
+        if (currentState) {
+          void refreshWalletAccess(currentState)
+            .catch((error) => {
+              walletState.error = error?.message || String(error);
+            })
+            .finally(() => renderState(currentState));
+        }
+      });
+    } catch (error) {
+      walletState.error = normalizeWalletError(error);
+    }
   }
 
   renderState(initialState);

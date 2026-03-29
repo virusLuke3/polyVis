@@ -123,36 +123,36 @@ function computeAnomalyProfile({
 
   let anomalyFlags = 0;
 
-  if (accountAgeDays <= 30 && amount >= 1_000_000_000n) {
+  if (accountAgeDays <= 45 && amount >= 250_000_000n) {
     anomalyFlags |= ANOMALY_FLAGS.NEW_WALLET_WHALE;
   }
-  if (Number(trade.oddsBps || 0) >= 5500 && amount >= 500_000_000n) {
+  if (Number(trade.oddsBps || 0) >= 5200 && amount >= 250_000_000n) {
     anomalyFlags |= ANOMALY_FLAGS.HIGH_CONVICTION_ENTRY;
   }
-  if (recentTradeCount >= 2 && totalPositionUsd >= 2_000_000_000n) {
+  if (recentTradeCount >= 2 && totalPositionUsd >= 750_000_000n) {
     anomalyFlags |= ANOMALY_FLAGS.RAPID_ACCUMULATION;
   }
   if (sameSideStreak >= 2) {
     anomalyFlags |= ANOMALY_FLAGS.SAME_SIDE_STREAK;
   }
-  if (recentTradeCount >= 2 && counterpartyConcentrationBps >= 5000) {
+  if (recentTradeCount >= 2 && counterpartyConcentrationBps >= 4000) {
     anomalyFlags |= ANOMALY_FLAGS.COUNTERPARTY_CONCENTRATION;
   }
-  if (marketImpactBps >= 100) {
+  if (marketImpactBps >= 40) {
     anomalyFlags |= ANOMALY_FLAGS.MARKET_IMPACT_SPIKE;
   }
-  if (washClusterScoreBps >= 3000) {
+  if (washClusterScoreBps >= 2200) {
     anomalyFlags |= ANOMALY_FLAGS.WASH_CLUSTER;
   }
-  if (smartMoneyScoreBps >= 5000) {
+  if (smartMoneyScoreBps >= 3500) {
     anomalyFlags |= ANOMALY_FLAGS.SMART_MONEY_FOLLOWTHROUGH;
   }
 
   const riskScoreBps = clampBps(
-    countBits(anomalyFlags) * 1100 +
-      (marketImpactBps >= 450 ? 900 : 0) +
-      (smartMoneyScoreBps >= 7000 ? 1300 : 0) +
-      (Number(trade.oddsBps || 0) >= 6500 ? 800 : 0) +
+    countBits(anomalyFlags) * 1200 +
+      (marketImpactBps >= 250 ? 900 : 0) +
+      (smartMoneyScoreBps >= 5500 ? 1300 : 0) +
+      (Number(trade.oddsBps || 0) >= 6000 ? 800 : 0) +
       (accountAgeDays <= 2 ? 1000 : 0)
   );
 
